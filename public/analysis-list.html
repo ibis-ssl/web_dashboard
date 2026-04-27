@@ -14,44 +14,110 @@
     <link href="./styles.css" rel="stylesheet" />
     <style>
       /* ===== 試合ログ一覧ページ追加スタイル ===== */
-      .match-groups {
+      .analysis-list-content {
         display: flex;
         flex-direction: column;
         gap: 28px;
+      }
+
+      .folder-card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 16px;
+      }
+
+      .folder-card {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        color: inherit;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-width: 0;
+        padding: 16px;
+        text-decoration: none;
+        transition: border-color 0.2s, transform 0.15s, box-shadow 0.15s;
+      }
+
+      .folder-card:hover {
+        border-color: var(--accent-blue);
+        box-shadow: 0 8px 20px rgba(0,0,0,0.12);
+        color: inherit;
+        text-decoration: none;
+        transform: translateY(-2px);
+      }
+
+      .folder-card-head {
+        align-items: center;
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+        min-width: 0;
+      }
+
+      .folder-card-title {
+        color: var(--text-primary);
+        font-size: 1rem;
+        font-weight: 700;
+        margin: 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .folder-card-count {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        color: var(--text-secondary);
+        flex-shrink: 0;
+        font-size: 0.75rem;
+        font-weight: 700;
+        padding: 2px 8px;
+      }
+
+      .folder-card-path {
+        color: var(--text-secondary);
+        font-family: 'SFMono-Regular', Consolas, monospace;
+        font-size: 0.74rem;
+        overflow-wrap: anywhere;
+      }
+
+      .folder-card-stats {
+        color: var(--text-secondary);
+        display: flex;
+        flex-wrap: wrap;
+        font-size: 0.8rem;
+        gap: 8px 14px;
+      }
+
+      .match-folder-toolbar {
+        align-items: center;
+        display: flex;
+        justify-content: flex-start;
+      }
+
+      .folder-back-link {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        color: var(--text-secondary);
+        font-size: 0.85rem;
+        font-weight: 700;
+        padding: 6px 10px;
+        text-decoration: none;
+      }
+
+      .folder-back-link:hover {
+        border-color: var(--accent-blue);
+        color: var(--text-primary);
+        text-decoration: none;
       }
 
       .match-folder-section {
         display: flex;
         flex-direction: column;
         gap: 12px;
-      }
-
-      .match-folder-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        border-bottom: 1px solid var(--border-color);
-        padding-bottom: 8px;
-      }
-
-      .match-folder-title {
-        margin: 0;
-        color: var(--text-primary);
-        font-size: 1.05rem;
-        font-weight: 700;
-        overflow-wrap: anywhere;
-      }
-
-      .match-folder-count {
-        flex-shrink: 0;
-        color: var(--text-secondary);
-        background: var(--bg-tertiary);
-        border: 1px solid var(--border-color);
-        border-radius: 6px;
-        padding: 2px 8px;
-        font-size: 0.75rem;
-        font-weight: 700;
       }
 
       .match-card-grid {
@@ -222,9 +288,9 @@
 
       <!-- 試合カード一覧 -->
       <div class="chart-card">
-        <h2>試合一覧</h2>
-        <p class="chart-description">各試合カードをクリックすると詳細分析ページへ移動します。</p>
-        <div id="match-groups" class="match-groups"></div>
+        <h2 id="list-title">試合一覧</h2>
+        <p id="list-description" class="chart-description">データを読み込み中...</p>
+        <div id="analysis-list-content" class="analysis-list-content"></div>
         <div id="loading-msg" style="text-align:center;padding:32px;color:var(--text-secondary)">データを読み込み中...</div>
       </div>
     </div>

@@ -192,13 +192,18 @@ jobs:
 
       - name: Analyze real game logs
         run: |
-          mkdir -p cache/reallog public/analysis-data
+          mkdir -p cache/reallog public/analysis-data public/analysis-folders
+          cp -r cache/reallog/analysis-data-cache/. public/analysis-data/ 2>/dev/null || true
+          cp -r cache/reallog/analysis-folders-cache/. public/analysis-folders/ 2>/dev/null || true
+          cp cache/reallog/analysis-index.json public/analysis-index.json 2>/dev/null || true
           INCREMENTAL_FLAG=""
           if [ "${{ needs.detect-mode.outputs.mode }}" = "incremental" ]; then
             INCREMENTAL_FLAG="--incremental"
           fi
           python scripts/reallog_collector.py $INCREMENTAL_FLAG
-          cp -r public/analysis-data cache/reallog/analysis-data-cache 2>/dev/null || true
+          mkdir -p cache/reallog/analysis-data-cache cache/reallog/analysis-folders-cache
+          cp -r public/analysis-data/. cache/reallog/analysis-data-cache/ 2>/dev/null || true
+          cp -r public/analysis-folders/. cache/reallog/analysis-folders-cache/ 2>/dev/null || true
           cp public/analysis-index.json cache/reallog/ 2>/dev/null || true
 
       - name: Upload artifact
@@ -207,6 +212,7 @@ jobs:
           name: reallog-data
           path: |
             public/analysis-index.json
+            public/analysis-folders/
             public/analysis-data/
 
   deploy:

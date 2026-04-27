@@ -1,6 +1,6 @@
 /**
  * 試合ログ分析一覧ページ
- * analysis-index.json を fetch して試合カード一覧を生成する。
+ * analysis-index.json と analysis-folders/*.json からフォルダ別ページを生成する。
  */
 
 function formatSec(sec) {
@@ -54,87 +54,224 @@ function buildMatchCard(meta) {
   return a;
 }
 
-function folderLabel(meta) {
-  return meta.gdrive_folder || '未分類';
+function formatMin(sec) {
+  return ((Number(sec) || 0) / 60).toFixed(1);
+}
+
+function summarizeMatches(matches) {
+  const totalGoals = matches.reduce(
+    (s, m) => s + (m.final_score?.yellow || 0) + (m.final_score?.blue || 0), 0
+  );
+  const avgDurationSec = matches.length > 0
+    ? matches.reduce((s, m) => s + (m.duration_sec || 0), 0) / matches.length
+    : 0;
+
+  return {
+    match_count: matches.length,
+    total_goals: totalGoals,
+    avg_duration_sec: avgDurationSec,
+  };
+}
+
+function summarizeFolders(folders) {
+  const matchCount = folders.reduce((s, f) => s + (f.match_count || 0), 0);
+  const totalGoals = folders.reduce((s, f) => s + (f.total_goals || 0), 0);
+  const totalDurationSec = folders.reduce(
+    (s, f) => s + (f.avg_duration_sec || 0) * (f.match_count || 0), 0
+  );
+
+  return {
+    match_count: matchCount,
+    total_goals: totalGoals,
+    avg_duration_sec: matchCount > 0 ? totalDurationSec / matchCount : 0,
+  };
+}
+
+function updateSummary(summary) {
+  document.getElementById('total-matches').textContent = String(summary.match_count || 0);
+  document.getElementById('avg-duration').textContent = formatMin(summary.avg_duration_sec);
+  document.getElementById('total-goals').textContent = String(summary.total_goals || 0);
+}
+
+function folderUrl(folderId) {
+  return `./analysis-list.html?folder=${encodeURIComponent(folderId)}`;
 }
 
 function groupMatchesByFolder(matches) {
-  const groups = [];
+  const folders = [];
   const groupMap = new Map();
 
   for (const meta of matches) {
-    const label = folderLabel(meta);
-    if (!groupMap.has(label)) {
-      const group = { label, matches: [] };
-      groupMap.set(label, group);
-      groups.push(group);
+    const folderId = meta.gdrive_folder_id || 'root';
+    if (!groupMap.has(folderId)) {
+      const folder = {
+        id: folderId,
+        name: meta.gdrive_folder || '未分類',
+        path: meta.gdrive_folder_path || '',
+        matches: [],
+      };
+      groupMap.set(folderId, folder);
+      folders.push(folder);
     }
-    groupMap.get(label).matches.push(meta);
+    groupMap.get(folderId).matches.push(meta);
   }
 
-  return groups;
+  return folders.map(folder => ({ ...folder, ...summarizeMatches(folder.matches) }));
 }
 
-function buildFolderSection(group) {
+function buildFolderCard(folder) {
+  const a = document.createElement('a');
+  a.href = folderUrl(folder.id);
+  a.className = 'folder-card';
+
+  const head = document.createElement('div');
+  head.className = 'folder-card-head';
+
+  const title = document.createElement('h3');
+  title.className = 'folder-card-title';
+  title.textContent = folder.name || '未分類';
+
+  const count = document.createElement('span');
+  count.className = 'folder-card-count';
+  count.textContent = `${folder.match_count || 0}試合`;
+
+  head.appendChild(title);
+  head.appendChild(count);
+  a.appendChild(head);
+
+  if (folder.path && folder.path !== folder.name) {
+    const path = document.createElement('div');
+    path.className = 'folder-card-path';
+    path.textContent = folder.path;
+    a.appendChild(path);
+  }
+
+  const stats = document.createElement('div');
+  stats.className = 'folder-card-stats';
+  stats.innerHTML = `
+    <span>平均 ${formatMin(folder.avg_duration_sec)}分</span>
+    <span>${folder.total_goals || 0}ゴール</span>
+  `;
+  a.appendChild(stats);
+
+  return a;
+}
+
+function buildMatchSection(matches) {
   const section = document.createElement('section');
   section.className = 'match-folder-section';
 
-  const header = document.createElement('div');
-  header.className = 'match-folder-header';
-
-  const title = document.createElement('h3');
-  title.className = 'match-folder-title';
-  title.textContent = group.label;
-
-  const count = document.createElement('span');
-  count.className = 'match-folder-count';
-  count.textContent = `${group.matches.length}試合`;
-
-  header.appendChild(title);
-  header.appendChild(count);
-
   const grid = document.createElement('div');
   grid.className = 'match-card-grid';
-  for (const meta of group.matches) {
+  for (const meta of matches) {
     grid.appendChild(buildMatchCard(meta));
   }
 
-  section.appendChild(header);
   section.appendChild(grid);
   return section;
 }
 
-fetch('./analysis-index.json')
-  .then(r => r.json())
-  .then(json => {
-    document.getElementById('loading-msg').style.display = 'none';
-    const matches = json.matches || [];
+function setListHeader(title, description) {
+  document.getElementById('list-title').textContent = title;
+  document.getElementById('list-description').textContent = description;
+}
 
-    // サマリーカード
-    document.getElementById('total-matches').textContent = String(matches.length);
+function clearContent() {
+  const content = document.getElementById('analysis-list-content');
+  content.innerHTML = '';
+  return content;
+}
 
-    if (matches.length > 0) {
-      const avgDur = matches.reduce((s, m) => s + (m.duration_sec || 0), 0) / matches.length;
-      document.getElementById('avg-duration').textContent = (avgDur / 60).toFixed(1);
+function renderFolderIndex(indexJson) {
+  const matches = indexJson.matches || [];
+  const folders = (indexJson.folders && indexJson.folders.length > 0)
+    ? indexJson.folders
+    : groupMatchesByFolder(matches);
+  const summary = matches.length > 0 ? summarizeMatches(matches) : summarizeFolders(folders);
+  const content = clearContent();
 
-      const totalGoals = matches.reduce(
-        (s, m) => s + (m.final_score?.yellow || 0) + (m.final_score?.blue || 0), 0
-      );
-      document.getElementById('total-goals').textContent = String(totalGoals);
-    }
+  document.title = '試合ログ分析一覧 – ibis-ssl';
+  setListHeader('フォルダ一覧', `${folders.length}フォルダ / ${summary.match_count || 0}試合`);
+  updateSummary(summary);
 
-    // カード一覧
-    const groupsContainer = document.getElementById('match-groups');
-    if (matches.length === 0) {
-      groupsContainer.innerHTML = '<p class="no-data-msg">試合データがありません。CI を実行してデータを生成してください。</p>';
-      return;
-    }
+  if (folders.length === 0) {
+    content.innerHTML = '<p class="no-data-msg">試合データがありません。CI を実行してデータを生成してください。</p>';
+    return;
+  }
 
-    for (const group of groupMatchesByFolder(matches)) {
-      groupsContainer.appendChild(buildFolderSection(group));
-    }
-  })
-  .catch(err => {
-    document.getElementById('loading-msg').textContent =
-      `analysis-index.json の読み込みに失敗しました: ${err.message}`;
+  const grid = document.createElement('div');
+  grid.className = 'folder-card-grid';
+  for (const folder of folders) {
+    grid.appendChild(buildFolderCard(folder));
+  }
+  content.appendChild(grid);
+}
+
+function renderFolderPage(folderJson) {
+  const folder = folderJson.folder || { name: '未分類' };
+  const matches = folderJson.matches || [];
+  const summary = summarizeMatches(matches);
+  const content = clearContent();
+
+  document.title = `${folder.name || '未分類'} – 試合ログ分析`;
+  setListHeader(folder.name || '未分類', `${summary.match_count || 0}試合 / 平均 ${formatMin(summary.avg_duration_sec)}分`);
+  updateSummary(summary);
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'match-folder-toolbar';
+
+  const backLink = document.createElement('a');
+  backLink.href = './analysis-list.html';
+  backLink.className = 'folder-back-link';
+  backLink.textContent = 'フォルダ一覧';
+  toolbar.appendChild(backLink);
+  content.appendChild(toolbar);
+
+  if (matches.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'no-data-msg';
+    empty.textContent = '試合データがありません。';
+    content.appendChild(empty);
+    return;
+  }
+
+  content.appendChild(buildMatchSection(matches));
+}
+
+function fetchJson(url) {
+  return fetch(url).then(r => {
+    if (!r.ok) throw new Error(`${url}: ${r.status} ${r.statusText}`);
+    return r.json();
   });
+}
+
+async function loadFolderPage(folderId) {
+  try {
+    return await fetchJson(`./analysis-folders/${encodeURIComponent(folderId)}.json`);
+  } catch (folderErr) {
+    const indexJson = await fetchJson('./analysis-index.json');
+    const folders = indexJson.folders || [];
+    const folder = folders.find(f => f.id === folderId) || { id: folderId, name: '未分類' };
+    const matches = (indexJson.matches || []).filter(m => (m.gdrive_folder_id || 'root') === folderId);
+    if (matches.length === 0) throw folderErr;
+    return { folder, matches };
+  }
+}
+
+async function init() {
+  const params = new URLSearchParams(window.location.search);
+  const folderId = params.get('folder');
+
+  if (folderId) {
+    renderFolderPage(await loadFolderPage(folderId));
+  } else {
+    renderFolderIndex(await fetchJson('./analysis-index.json'));
+  }
+
+  document.getElementById('loading-msg').style.display = 'none';
+}
+
+init().catch(err => {
+  document.getElementById('loading-msg').textContent =
+    `分析データの読み込みに失敗しました: ${err.message}`;
+});
