@@ -15,7 +15,7 @@ jobs:
       mode: ${{ steps.detect.outputs.mode }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Detect analysis mode
         id: detect
@@ -42,10 +42,10 @@ jobs:
       actions: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -56,7 +56,7 @@ jobs:
           pip install requests numpy python-dxf
 
       - name: Restore cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: cache
           key: cache-crane-${{ github.run_id }}
@@ -74,7 +74,7 @@ jobs:
           cp github_action_data.json cache/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crane-data
           path: github_action_data.json
@@ -86,10 +86,10 @@ jobs:
       actions: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -100,7 +100,7 @@ jobs:
           pip install requests
 
       - name: Restore cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: cache
           key: cache-match-${{ github.run_id }}
@@ -118,7 +118,7 @@ jobs:
           cp match_data.json cache/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: match-data
           path: match_data.json
@@ -130,10 +130,10 @@ jobs:
       actions: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -144,7 +144,7 @@ jobs:
           pip install requests protobuf
 
       - name: Restore cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: cache
           key: cache-goal-${{ github.run_id }}
@@ -159,7 +159,7 @@ jobs:
           cp goal_scenes.json cache/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: goal-data
           path: goal_scenes.json
@@ -169,10 +169,10 @@ jobs:
     needs: detect-mode
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -183,7 +183,7 @@ jobs:
           pip install "gdown>=5.1" protobuf
 
       - name: Restore cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: cache/reallog
           key: cache-reallog-${{ github.run_id }}
@@ -207,7 +207,7 @@ jobs:
           cp public/analysis-index.json cache/reallog/ 2>/dev/null || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reallog-data
           path: |
@@ -223,36 +223,36 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download crane-data
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: crane-data
           path: public/
 
       - name: Download match-data
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: match-data
           path: public/
 
       - name: Download goal-data
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: goal-data
           path: public/
 
       - name: Download reallog-data
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: reallog-data
           path: public/
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: public/
 
       - name: Publish
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
