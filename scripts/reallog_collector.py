@@ -11,6 +11,7 @@ ssl_log_parser.extract_full_analysis() でフル解析して JSON を出力す�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -52,15 +53,53 @@ OUTPUT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 
-def download_folder_and_get_ids(folder_id: str) -> tuple[list[pathlib.Path], dict[str, str]]:
-    """フォルダをダウンロードし、ファイルパス一覧と {filename: file_id} を返す。
+def _relative_log_path(log_path: pathlib.Path) -> pathlib.Path:
+    """CACHE_DIR からの相対パスを返す。失敗時はファイル名のみを返す。"""
+    try:
+        return log_path.relative_to(CACHE_DIR)
+    except ValueError:
+        return pathlib.Path(log_path.name)
 
-    gdown の "Processing file {id} {name}" 出力を解析して file_id を抽出する。
-    解析に失敗した場合は空 dict を返す。
+
+def _drive_key(path: pathlib.Path | str) -> str:
+    """Drive/gdown 由来のパスを POSIX 形式の相対キーに正規化する。"""
+    return pathlib.PurePosixPath(str(path).replace("\\", "/")).as_posix()
+
+
+def _match_id_from_relative_path(rel_path: pathlib.Path) -> str:
+    """ログの相対パスから衝突しにくい JSON ID を生成する。
+
+    既存互換のためトップレベルのログは従来どおりファイル名ベースにする。
+    サブフォルダ配下のログは相対パス由来の短い hash を付け、同名ログの衝突を避ける。
     """
-    import io
-    import re
-    from contextlib import redirect_stdout
+    name = rel_path.name
+    if name.endswith(".log.gz"):
+        base = name[: -len(".log.gz")]
+    else:
+        base = rel_path.stem
+        if base.endswith(".log"):
+            base = base[:-4]
+
+    def clean(part: str) -> str:
+        return part.replace(" ", "_").replace("/", "_").replace("\\", "_")
+
+    if rel_path.parent == pathlib.Path("."):
+        return clean(base)
+
+    path_parts = [clean(part) for part in rel_path.parent.parts] + [clean(base)]
+    path_hash = hashlib.sha1(_drive_key(rel_path).encode("utf-8")).hexdigest()[:8]
+    return f"{'_'.join(path_parts)}_{path_hash}"
+
+
+def _folder_meta_from_relative_path(rel_path: pathlib.Path) -> tuple[str, str]:
+    """ログの直接の親フォルダ名とフォルダ相対パスを返す。"""
+    if rel_path.parent == pathlib.Path("."):
+        return "", ""
+    return rel_path.parent.name, _drive_key(rel_path.parent)
+
+
+def download_folder_and_get_ids(folder_id: str) -> tuple[list[pathlib.Path], dict[str, str]]:
+    """フォルダをダウンロードし、ファイルパス一覧と {relative_path: file_id} を返す。"""
 
     try:
         import gdown
@@ -69,43 +108,67 @@ def download_folder_and_get_ids(folder_id: str) -> tuple[list[pathlib.Path], dic
         sys.exit(1)
 
     print(f"Google Drive フォルダ {folder_id} をダウンロード中...")
-    buf = io.StringIO()
-    try:
-        with redirect_stdout(buf):
-            gdown.download_folder(
-                id=folder_id,
-                output=str(CACHE_DIR),
-                quiet=False,
-                use_cookies=False,
-            )
-    except Exception as e:
-        print(f"フォルダダウンロード失敗: {e}")
-    finally:
-        captured = buf.getvalue()
-        print(captured, end="")
 
     gdrive_files: dict[str, str] = {}
-    for line in captured.splitlines():
-        m = re.match(r"Processing file (\S+) (.+)", line)
-        if m:
-            gdrive_files[m.group(2).strip()] = m.group(1)
+    try:
+        planned_files = gdown.download_folder(
+            id=folder_id,
+            output=str(CACHE_DIR),
+            quiet=False,
+            use_cookies=False,
+            skip_download=True,
+        )
+    except Exception as e:
+        print(f"フォルダ構造取得失敗: {e}")
+        planned_files = []
+
+    for planned in planned_files or []:
+        file_id = getattr(planned, "id", "")
+        rel_path = _drive_key(getattr(planned, "path", ""))
+        if not file_id or not rel_path.endswith(".log.gz"):
+            continue
+        gdrive_files[rel_path] = file_id
 
     if gdrive_files:
         print(f"  {len(gdrive_files)} 件のファイルIDを取得")
     else:
         print("  ファイルID取得失敗 (ダウンロードリンクなし)")
 
-    return sorted(CACHE_DIR.glob("*.log.gz")), gdrive_files
+    try:
+        downloaded_files = gdown.download_folder(
+            id=folder_id,
+            output=str(CACHE_DIR),
+            quiet=False,
+            use_cookies=False,
+        )
+    except Exception as e:
+        print(f"フォルダダウンロード失敗: {e}")
+        downloaded_files = []
+
+    log_files = [
+        pathlib.Path(path)
+        for path in downloaded_files or []
+        if str(path).endswith(".log.gz")
+    ]
+
+    if not log_files:
+        log_files = sorted(CACHE_DIR.rglob("*.log.gz"))
+
+    return sorted(log_files), gdrive_files
 
 
-def _load_meta_from_json(out_path: pathlib.Path, gdrive_url: str | None) -> dict | None:
-    """JSON を読み込み、必要なら gdrive_url を更新して meta を返す。失敗時は None。"""
+def _load_meta_from_json(out_path: pathlib.Path, meta_updates: dict) -> dict | None:
+    """JSON を読み込み、必要なら meta を更新して返す。失敗時は None。"""
     try:
         with open(out_path, "r", encoding="utf-8") as f:
             d = json.load(f)
         meta = d["meta"]
-        if gdrive_url and meta.get("gdrive_url") != gdrive_url:
-            meta["gdrive_url"] = gdrive_url
+        changed = False
+        for key, value in meta_updates.items():
+            if value is not None and meta.get(key) != value:
+                meta[key] = value
+                changed = True
+        if changed:
             with open(out_path, "w", encoding="utf-8") as fw:
                 json.dump(d, fw, ensure_ascii=False, separators=(",", ":"))
         return meta
@@ -133,7 +196,7 @@ log_files, gdrive_files = download_folder_and_get_ids(args.folder_id)
 
 if not log_files:
     # フォールバック: キャッシュディレクトリにある既存ファイルのみ処理
-    log_files = sorted(CACHE_DIR.glob("*.log.gz"))
+    log_files = sorted(CACHE_DIR.rglob("*.log.gz"))
     if not log_files:
         print("処理対象のログファイルが見つかりません。")
         sys.exit(0)
@@ -150,21 +213,25 @@ errors = 0
 
 for log_path in log_files:
     filename = log_path.name
+    rel_path = _relative_log_path(log_path)
+    rel_key = _drive_key(rel_path)
+    match_id = _match_id_from_relative_path(rel_path)
+    folder_name, folder_path = _folder_meta_from_relative_path(rel_path)
 
-    # JSON キャッシュキー (ファイル名ベース)
-    base = log_path.stem
-    if base.endswith(".log"):
-        base = base[:-4]
-    match_id = base.replace(" ", "_").replace("/", "_").replace("\\", "_")
-
-    file_id = gdrive_files.get(filename)
+    file_id = gdrive_files.get(rel_key)
     gdrive_url = f"https://drive.google.com/file/d/{file_id}/view" if file_id else None
+    meta_updates = {
+        "id": match_id,
+        "gdrive_folder": folder_name,
+        "gdrive_folder_path": folder_path,
+        "gdrive_url": gdrive_url,
+    }
 
     if args.incremental and match_id in existing_ids:
-        print(f"スキップ (既存): {filename}")
+        print(f"スキップ (既存): {rel_key}")
         out_path = OUTPUT_DATA_DIR / f"{match_id}.json"
         if out_path.exists():
-            meta = _load_meta_from_json(out_path, gdrive_url)
+            meta = _load_meta_from_json(out_path, meta_updates)
             if meta:
                 matches_meta.append(meta)
         skipped += 1
@@ -173,14 +240,14 @@ for log_path in log_files:
     # JSON キャッシュが既に存在する場合はスキップ
     out_path = OUTPUT_DATA_DIR / f"{match_id}.json"
     if out_path.exists() and not args.incremental:
-        print(f"解析済みキャッシュ使用: {filename}")
-        meta = _load_meta_from_json(out_path, gdrive_url)
+        print(f"解析済みキャッシュ使用: {rel_key}")
+        meta = _load_meta_from_json(out_path, meta_updates)
         if meta:
             matches_meta.append(meta)
         skipped += 1
         continue
 
-    print(f"解析中: {filename}")
+    print(f"解析中: {rel_key}")
     try:
         log_gz_bytes = log_path.read_bytes()
         analysis = ssl_log_parser.extract_full_analysis(log_gz_bytes, filename=filename)
@@ -189,8 +256,7 @@ for log_path in log_files:
         errors += 1
         continue
 
-    if gdrive_url:
-        analysis["meta"]["gdrive_url"] = gdrive_url
+    analysis["meta"].update({k: v for k, v in meta_updates.items() if v is not None})
 
     # 個別 JSON を出力
     with open(out_path, "w", encoding="utf-8") as f:

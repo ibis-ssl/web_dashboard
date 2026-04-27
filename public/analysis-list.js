@@ -54,6 +54,56 @@ function buildMatchCard(meta) {
   return a;
 }
 
+function folderLabel(meta) {
+  return meta.gdrive_folder || '未分類';
+}
+
+function groupMatchesByFolder(matches) {
+  const groups = [];
+  const groupMap = new Map();
+
+  for (const meta of matches) {
+    const label = folderLabel(meta);
+    if (!groupMap.has(label)) {
+      const group = { label, matches: [] };
+      groupMap.set(label, group);
+      groups.push(group);
+    }
+    groupMap.get(label).matches.push(meta);
+  }
+
+  return groups;
+}
+
+function buildFolderSection(group) {
+  const section = document.createElement('section');
+  section.className = 'match-folder-section';
+
+  const header = document.createElement('div');
+  header.className = 'match-folder-header';
+
+  const title = document.createElement('h3');
+  title.className = 'match-folder-title';
+  title.textContent = group.label;
+
+  const count = document.createElement('span');
+  count.className = 'match-folder-count';
+  count.textContent = `${group.matches.length}試合`;
+
+  header.appendChild(title);
+  header.appendChild(count);
+
+  const grid = document.createElement('div');
+  grid.className = 'match-card-grid';
+  for (const meta of group.matches) {
+    grid.appendChild(buildMatchCard(meta));
+  }
+
+  section.appendChild(header);
+  section.appendChild(grid);
+  return section;
+}
+
 fetch('./analysis-index.json')
   .then(r => r.json())
   .then(json => {
@@ -74,14 +124,14 @@ fetch('./analysis-index.json')
     }
 
     // カード一覧
-    const grid = document.getElementById('match-card-grid');
+    const groupsContainer = document.getElementById('match-groups');
     if (matches.length === 0) {
-      grid.innerHTML = '<p class="no-data-msg">試合データがありません。CI を実行してデータを生成してください。</p>';
+      groupsContainer.innerHTML = '<p class="no-data-msg">試合データがありません。CI を実行してデータを生成してください。</p>';
       return;
     }
 
-    for (const meta of matches) {
-      grid.appendChild(buildMatchCard(meta));
+    for (const group of groupMatchesByFolder(matches)) {
+      groupsContainer.appendChild(buildFolderSection(group));
     }
   })
   .catch(err => {

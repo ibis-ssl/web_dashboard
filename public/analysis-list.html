@@ -14,6 +14,46 @@
     <link href="./styles.css" rel="stylesheet" />
     <style>
       /* ===== 試合ログ一覧ページ追加スタイル ===== */
+      .match-groups {
+        display: flex;
+        flex-direction: column;
+        gap: 28px;
+      }
+
+      .match-folder-section {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .match-folder-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid var(--border-color);
+        padding-bottom: 8px;
+      }
+
+      .match-folder-title {
+        margin: 0;
+        color: var(--text-primary);
+        font-size: 1.05rem;
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+
+      .match-folder-count {
+        flex-shrink: 0;
+        color: var(--text-secondary);
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-size: 0.75rem;
+        font-weight: 700;
+      }
+
       .match-card-grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -184,7 +224,7 @@
       <div class="chart-card">
         <h2>試合一覧</h2>
         <p class="chart-description">各試合カードをクリックすると詳細分析ページへ移動します。</p>
-        <div id="match-card-grid" class="match-card-grid"></div>
+        <div id="match-groups" class="match-groups"></div>
         <div id="loading-msg" style="text-align:center;padding:32px;color:var(--text-secondary)">データを読み込み中...</div>
       </div>
     </div>
