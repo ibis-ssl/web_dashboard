@@ -377,6 +377,7 @@ class LogPlayer {
   _updateDataSourceUI() {
     this._dataSourceBtns.forEach(btn => {
       btn.classList.toggle('active', btn.dataset.source === this.dataSource);
+      btn.disabled = btn.dataset.source === 'tracker' ? !this.hasTracker : !this.hasVision;
     });
   }
 
@@ -456,10 +457,13 @@ class LogPlayer {
     this._setLoadingState(true);
 
     try {
-      const buffer = await file.arrayBuffer();
       const parser = await createSSLLogParser('./proto/ssl_combined.json');
-      const result = await parser.parse(buffer, ratio => {
+      const result = await parser.parse(file, ratio => {
         this._parseBar.style.width = `${Math.round(ratio * 100)}%`;
+      }, {
+        replayFps: 10,
+        preferSource: 'tracker',
+        keepAlternateSource: false,
       });
 
       this.visionFrames = result.visionFrames;
@@ -472,6 +476,10 @@ class LogPlayer {
       this.teamNames = result.teamNames;
       this.durationNs = result.durationNs;
       this.startNs = this.frames.length > 0 ? this.frames[0].timestampNs : BigInt(0);
+
+      if (this.frames.length === 0) {
+        throw new Error('再生可能な Vision / Tracker フレームが見つかりませんでした');
+      }
 
       this._setLoadingState(false);
       this._showPlayer(file.name);

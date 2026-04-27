@@ -1,5 +1,8 @@
 {
+  "name": "web_dashboard",
+  "private": true,
   "devDependencies": {
+    "pako": "^2.1.0",
     "protobufjs": "^7.5.4",
     "protobufjs-cli": "^2.0.0"
   }
