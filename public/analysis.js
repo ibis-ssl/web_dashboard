@@ -544,8 +544,8 @@ class FullReplayPlayer {
 // イベントカテゴリ判定
 // ============================================================
 const EVENT_GOAL_TYPES  = new Set([8, 39, 42, 43]);
-const EVENT_FOUL_TYPES  = new Set([13,14,15,17,18,19,20,21,22,24,26,27,28,29,31,34,51,52]);
-const EVENT_BALL_TYPES  = new Set([6,7,11]);
+const EVENT_FOUL_TYPES  = new Set([13,14,15,17,18,19,20,21,22,24,26,27,28,29,31,32,34,35,36,47,48]);
+const EVENT_BALL_TYPES  = new Set([6,7,11,41]);
 
 function eventCategory(typeVal) {
   if (EVENT_GOAL_TYPES.has(typeVal)) return 'goal';
