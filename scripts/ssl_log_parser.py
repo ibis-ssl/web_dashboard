@@ -39,6 +39,8 @@ MSG_TYPE_VISION_2014 = 4
 MSG_TYPE_TRACKER = 5
 
 SSL_LOG_HEADER = b"SSL_LOG_FILE"
+# extract_full_analysis() の出力スキーマや解析ロジックを実質的に変えたら必ず bump する。
+ANALYSIS_VERSION = 2
 SCENE_DURATION_SEC = 10.0
 OUTPUT_FPS = 10
 
@@ -1091,6 +1093,7 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
     return {
         "meta": {
             "id": match_id,
+            "analysis_version": ANALYSIS_VERSION,
             "filename": os.path.basename(filename),
             "teams": {"yellow": team_yellow, "blue": team_blue},
             "final_score": final_score,

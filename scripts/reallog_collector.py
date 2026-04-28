@@ -236,11 +236,14 @@ def _load_meta_from_json(
     meta_updates: dict,
     write_path: pathlib.Path | None = None,
 ) -> dict | None:
-    """JSON を読み込み、必要なら meta を更新して返す。失敗時は None。"""
+    """JSON を読み込み、必要なら meta を更新して返す。失敗時または古いバージョンは None。"""
     try:
         with open(in_path, "r", encoding="utf-8") as f:
             d = json.load(f)
         meta = d["meta"]
+        cached_version = meta.get("analysis_version")
+        if not isinstance(cached_version, int) or cached_version < ssl_log_parser.ANALYSIS_VERSION:
+            return None
         changed = False
         for key, value in meta_updates.items():
             if value is not None and meta.get(key) != value:

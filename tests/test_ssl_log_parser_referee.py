@@ -104,6 +104,15 @@ class RefereeSummaryTest(unittest.TestCase):
         self.assertEqual(analysis["meta"]["teams"], {"yellow": "Yellow", "blue": "Blue"})
         self.assertEqual(analysis["meta"]["final_score"], {"yellow": 0, "blue": 0})
 
+    def test_meta_has_current_analysis_version(self):
+        log = _log_bytes(
+            (0, _referee("ibis", "RoboDragons", 2, 1, counter=1)),
+        )
+
+        analysis = ssl_log_parser.extract_full_analysis(log)
+
+        self.assertEqual(analysis["meta"]["analysis_version"], ssl_log_parser.ANALYSIS_VERSION)
+
 
 if __name__ == "__main__":
     unittest.main()
