@@ -95,15 +95,34 @@ def _match_id_from_relative_path(rel_path: pathlib.Path) -> str:
     return f"{'_'.join(path_parts)}_{path_hash}"
 
 
-def _legacy_match_id_from_filename(filename: str) -> str:
-    """フォルダ分割前のファイル名ベース ID を返す。既存 artifact の移行用。"""
+def _base_from_log_filename(filename: str) -> str:
     if filename.endswith(".log.gz"):
-        base = filename[: -len(".log.gz")]
-    else:
-        base = pathlib.Path(filename).stem
-        if base.endswith(".log"):
-            base = base[:-4]
+        return filename[: -len(".log.gz")]
+    base = pathlib.Path(filename).stem
+    if base.endswith(".log"):
+        return base[:-4]
     return base.replace(" ", "_").replace("/", "_").replace("\\", "_")
+
+
+def _clean_id_part(part: str) -> str:
+    return part.replace(" ", "_").replace("/", "_").replace("\\", "_")
+
+
+def _legacy_match_ids_from_filename(filename: str) -> list[str]:
+    """フォルダ分割前のファイル名ベース ID 候補を返す。既存 artifact の移行用。"""
+    base = _base_from_log_filename(filename)
+    bases = [base]
+
+    without_ssl_suffix = re.sub(r"_SSL\d+$", "", base)
+    if without_ssl_suffix != base:
+        bases.append(without_ssl_suffix)
+
+    ids: list[str] = []
+    for candidate in bases:
+        legacy_id = _clean_id_part(candidate)
+        if legacy_id not in ids:
+            ids.append(legacy_id)
+    return ids
 
 
 def _folder_id_from_path(folder_path: str) -> str:
@@ -236,12 +255,13 @@ def _load_meta_from_json(
         return None
 
 
-def _load_cached_meta(out_path: pathlib.Path, legacy_out_path: pathlib.Path, meta_updates: dict) -> dict | None:
+def _load_cached_meta(out_path: pathlib.Path, legacy_out_paths: list[pathlib.Path], meta_updates: dict) -> dict | None:
     """現行 ID の JSON、なければ旧 ID の JSON を読み込んで現行 ID に移行する。"""
     if out_path.exists():
         return _load_meta_from_json(out_path, meta_updates)
-    if legacy_out_path != out_path and legacy_out_path.exists():
-        return _load_meta_from_json(legacy_out_path, meta_updates, write_path=out_path)
+    for legacy_out_path in legacy_out_paths:
+        if legacy_out_path != out_path and legacy_out_path.exists():
+            return _load_meta_from_json(legacy_out_path, meta_updates, write_path=out_path)
     return None
 
 
@@ -285,31 +305,38 @@ for log_path in log_files:
     rel_path = _relative_log_path(log_path)
     rel_key = _drive_key(rel_path)
     match_id = _match_id_from_relative_path(rel_path)
-    legacy_match_id = _legacy_match_id_from_filename(filename)
+    legacy_match_ids = _legacy_match_ids_from_filename(filename)
     folder_id, folder_name, folder_path = _folder_meta_from_relative_path(rel_path)
 
     file_id = gdrive_files.get(rel_key)
     gdrive_url = f"https://drive.google.com/file/d/{file_id}/view" if file_id else None
     meta_updates = {
         "id": match_id,
+        "filename": filename,
         "gdrive_folder_id": folder_id,
         "gdrive_folder": folder_name,
         "gdrive_folder_path": folder_path,
         "gdrive_url": gdrive_url,
     }
     out_path = OUTPUT_DATA_DIR / f"{match_id}.json"
-    legacy_out_path = OUTPUT_DATA_DIR / f"{legacy_match_id}.json"
+    legacy_out_paths = [
+        OUTPUT_DATA_DIR / f"{legacy_match_id}.json"
+        for legacy_match_id in legacy_match_ids
+    ]
 
-    if args.incremental and (match_id in existing_ids or legacy_match_id in existing_ids):
+    if args.incremental and (
+        match_id in existing_ids or any(legacy_match_id in existing_ids for legacy_match_id in legacy_match_ids)
+    ):
         print(f"スキップ (既存): {rel_key}")
-        meta = _load_cached_meta(out_path, legacy_out_path, meta_updates)
+        meta = _load_cached_meta(out_path, legacy_out_paths, meta_updates)
         if meta:
             matches_meta.append(meta)
-        skipped += 1
-        continue
+            skipped += 1
+            continue
+        print("  既存メタデータのキャッシュが見つからないため再解析します")
 
     # JSON キャッシュが既に存在する場合はスキップ
-    meta = _load_cached_meta(out_path, legacy_out_path, meta_updates)
+    meta = _load_cached_meta(out_path, legacy_out_paths, meta_updates)
     if meta and not args.incremental:
         print(f"解析済みキャッシュ使用: {rel_key}")
         matches_meta.append(meta)
