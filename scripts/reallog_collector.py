@@ -46,6 +46,13 @@ parser.add_argument(
     default=GDRIVE_FOLDER_ID,
     help="Google Drive フォルダID (デフォルト: %(default)s)",
 )
+parser.add_argument(
+    "--max-reanalyze",
+    type=int,
+    default=0,
+    metavar="N",
+    help="バージョン不一致による再解析の上限件数 (0=無制限)",
+)
 args = parser.parse_args()
 
 # ---------------------------------------------------------------------------
@@ -344,6 +351,10 @@ for log_path in log_files:
         print(f"解析済みキャッシュ使用: {rel_key}")
         matches_meta.append(meta)
         skipped += 1
+        continue
+
+    if args.max_reanalyze and processed >= args.max_reanalyze:
+        print(f"スキップ (再解析上限 {args.max_reanalyze} 件に到達): {rel_key}")
         continue
 
     print(f"解析中: {rel_key}")

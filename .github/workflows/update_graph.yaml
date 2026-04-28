@@ -212,7 +212,7 @@ jobs:
           if [ "${{ needs.detect-mode.outputs.mode }}" = "incremental" ]; then
             INCREMENTAL_FLAG="--incremental"
           fi
-          python -u scripts/reallog_collector.py $INCREMENTAL_FLAG
+          python -u scripts/reallog_collector.py $INCREMENTAL_FLAG --max-reanalyze 5
           mkdir -p cache/reallog/analysis-data-cache cache/reallog/analysis-folders-cache
           cp -r public/analysis-data/. cache/reallog/analysis-data-cache/ 2>/dev/null || true
           cp -r public/analysis-folders/. cache/reallog/analysis-folders-cache/ 2>/dev/null || true
