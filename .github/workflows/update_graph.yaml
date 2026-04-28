@@ -167,6 +167,9 @@ jobs:
   collect-reallog-data:
     runs-on: ubuntu-latest
     needs: detect-mode
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -191,16 +194,25 @@ jobs:
             cache-reallog-
 
       - name: Analyze real game logs
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p cache/reallog public/analysis-data public/analysis-folders
           cp -r cache/reallog/analysis-data-cache/. public/analysis-data/ 2>/dev/null || true
           cp -r cache/reallog/analysis-folders-cache/. public/analysis-folders/ 2>/dev/null || true
           cp cache/reallog/analysis-index.json public/analysis-index.json 2>/dev/null || true
+          if [ ! -f public/analysis-index.json ]; then
+            PREVIOUS_RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow "${{ github.workflow }}" --branch "${{ github.ref_name }}" --status success --limit 1 --json databaseId --jq '.[0].databaseId // ""' 2>/dev/null || true)
+            if [ -n "$PREVIOUS_RUN_ID" ]; then
+              echo "前回成功 run $PREVIOUS_RUN_ID の reallog-data artifact を復元します"
+              gh run download "$PREVIOUS_RUN_ID" --repo "${{ github.repository }}" --name reallog-data --dir public 2>/dev/null || true
+            fi
+          fi
           INCREMENTAL_FLAG=""
           if [ "${{ needs.detect-mode.outputs.mode }}" = "incremental" ]; then
             INCREMENTAL_FLAG="--incremental"
           fi
-          python scripts/reallog_collector.py $INCREMENTAL_FLAG
+          python -u scripts/reallog_collector.py $INCREMENTAL_FLAG
           mkdir -p cache/reallog/analysis-data-cache cache/reallog/analysis-folders-cache
           cp -r public/analysis-data/. cache/reallog/analysis-data-cache/ 2>/dev/null || true
           cp -r public/analysis-folders/. cache/reallog/analysis-folders-cache/ 2>/dev/null || true

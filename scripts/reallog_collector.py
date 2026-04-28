@@ -95,6 +95,17 @@ def _match_id_from_relative_path(rel_path: pathlib.Path) -> str:
     return f"{'_'.join(path_parts)}_{path_hash}"
 
 
+def _legacy_match_id_from_filename(filename: str) -> str:
+    """フォルダ分割前のファイル名ベース ID を返す。既存 artifact の移行用。"""
+    if filename.endswith(".log.gz"):
+        base = filename[: -len(".log.gz")]
+    else:
+        base = pathlib.Path(filename).stem
+        if base.endswith(".log"):
+            base = base[:-4]
+    return base.replace(" ", "_").replace("/", "_").replace("\\", "_")
+
+
 def _folder_id_from_path(folder_path: str) -> str:
     """フォルダ相対パスから URL/ファイル名に使える安定 ID を生成する。"""
     if not folder_path:
@@ -201,10 +212,14 @@ def download_folder_and_get_ids(folder_id: str) -> tuple[list[pathlib.Path], dic
     return sorted(log_files), gdrive_files
 
 
-def _load_meta_from_json(out_path: pathlib.Path, meta_updates: dict) -> dict | None:
+def _load_meta_from_json(
+    in_path: pathlib.Path,
+    meta_updates: dict,
+    write_path: pathlib.Path | None = None,
+) -> dict | None:
     """JSON を読み込み、必要なら meta を更新して返す。失敗時は None。"""
     try:
-        with open(out_path, "r", encoding="utf-8") as f:
+        with open(in_path, "r", encoding="utf-8") as f:
             d = json.load(f)
         meta = d["meta"]
         changed = False
@@ -212,12 +227,22 @@ def _load_meta_from_json(out_path: pathlib.Path, meta_updates: dict) -> dict | N
             if value is not None and meta.get(key) != value:
                 meta[key] = value
                 changed = True
-        if changed:
+        out_path = write_path or in_path
+        if changed or out_path != in_path:
             with open(out_path, "w", encoding="utf-8") as fw:
                 json.dump(d, fw, ensure_ascii=False, separators=(",", ":"))
         return meta
     except Exception:
         return None
+
+
+def _load_cached_meta(out_path: pathlib.Path, legacy_out_path: pathlib.Path, meta_updates: dict) -> dict | None:
+    """現行 ID の JSON、なければ旧 ID の JSON を読み込んで現行 ID に移行する。"""
+    if out_path.exists():
+        return _load_meta_from_json(out_path, meta_updates)
+    if legacy_out_path != out_path and legacy_out_path.exists():
+        return _load_meta_from_json(legacy_out_path, meta_updates, write_path=out_path)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +285,7 @@ for log_path in log_files:
     rel_path = _relative_log_path(log_path)
     rel_key = _drive_key(rel_path)
     match_id = _match_id_from_relative_path(rel_path)
+    legacy_match_id = _legacy_match_id_from_filename(filename)
     folder_id, folder_name, folder_path = _folder_meta_from_relative_path(rel_path)
 
     file_id = gdrive_files.get(rel_key)
@@ -271,24 +297,22 @@ for log_path in log_files:
         "gdrive_folder_path": folder_path,
         "gdrive_url": gdrive_url,
     }
+    out_path = OUTPUT_DATA_DIR / f"{match_id}.json"
+    legacy_out_path = OUTPUT_DATA_DIR / f"{legacy_match_id}.json"
 
-    if args.incremental and match_id in existing_ids:
+    if args.incremental and (match_id in existing_ids or legacy_match_id in existing_ids):
         print(f"スキップ (既存): {rel_key}")
-        out_path = OUTPUT_DATA_DIR / f"{match_id}.json"
-        if out_path.exists():
-            meta = _load_meta_from_json(out_path, meta_updates)
-            if meta:
-                matches_meta.append(meta)
+        meta = _load_cached_meta(out_path, legacy_out_path, meta_updates)
+        if meta:
+            matches_meta.append(meta)
         skipped += 1
         continue
 
     # JSON キャッシュが既に存在する場合はスキップ
-    out_path = OUTPUT_DATA_DIR / f"{match_id}.json"
-    if out_path.exists() and not args.incremental:
+    meta = _load_cached_meta(out_path, legacy_out_path, meta_updates)
+    if meta and not args.incremental:
         print(f"解析済みキャッシュ使用: {rel_key}")
-        meta = _load_meta_from_json(out_path, meta_updates)
-        if meta:
-            matches_meta.append(meta)
+        matches_meta.append(meta)
         skipped += 1
         continue
 
