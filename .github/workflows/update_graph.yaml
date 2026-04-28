@@ -188,7 +188,10 @@ jobs:
       - name: Restore cache
         uses: actions/cache@v5
         with:
-          path: cache/reallog
+          path: |
+            cache/reallog/analysis-data-cache
+            cache/reallog/analysis-folders-cache
+            cache/reallog/analysis-index.json
           key: cache-reallog-${{ github.run_id }}
           restore-keys: |
             cache-reallog-
