@@ -17,6 +17,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import sys
 
 import ssl_log_parser
@@ -177,6 +178,48 @@ def _folder_summary(folder_id: str, matches: list[dict]) -> dict:
         "total_goals": total_goals,
         "avg_duration_sec": round(avg_duration_sec, 1),
     }
+
+
+def _write_index_files(matches_meta_list: list[dict]) -> None:
+    """public/ とcache/ の両方にインデックスを書き出す (runner強制終了時の進捗保全用)。"""
+    sorted_meta = sorted(matches_meta_list, key=lambda m: m.get("filename", ""), reverse=True)
+
+    folder_groups: dict[str, list[dict]] = {}
+    folder_order: list[str] = []
+    for meta in sorted_meta:
+        folder_id = meta.get("gdrive_folder_id") or "root"
+        if folder_id not in folder_groups:
+            folder_groups[folder_id] = []
+            folder_order.append(folder_id)
+        folder_groups[folder_id].append(meta)
+
+    folder_summaries = [
+        _folder_summary(fid, folder_groups[fid])
+        for fid in folder_order
+    ]
+
+    for old in OUTPUT_FOLDER_INDEX_DIR.glob("*.json"):
+        old.unlink()
+    for folder in folder_summaries:
+        p = OUTPUT_FOLDER_INDEX_DIR / f"{folder['id']}.json"
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"folder": folder, "matches": folder_groups[folder["id"]]}, f, ensure_ascii=False, indent=2)
+    with open(OUTPUT_INDEX, "w", encoding="utf-8") as f:
+        json.dump({"matches": sorted_meta, "folders": folder_summaries}, f, ensure_ascii=False, indent=2)
+
+    cache_data_dir = CACHE_DIR / "analysis-data-cache"
+    cache_folders_dir = CACHE_DIR / "analysis-folders-cache"
+    cache_data_dir.mkdir(parents=True, exist_ok=True)
+    cache_folders_dir.mkdir(parents=True, exist_ok=True)
+    for old in cache_folders_dir.glob("*.json"):
+        old.unlink()
+    for folder in folder_summaries:
+        p = cache_folders_dir / f"{folder['id']}.json"
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"folder": folder, "matches": folder_groups[folder["id"]]}, f, ensure_ascii=False, indent=2)
+    cache_index = CACHE_DIR / "analysis-index.json"
+    with open(cache_index, "w", encoding="utf-8") as f:
+        json.dump({"matches": sorted_meta, "folders": folder_summaries}, f, ensure_ascii=False, indent=2)
 
 
 def download_folder_and_get_ids(folder_id: str) -> tuple[list[pathlib.Path], dict[str, str]]:
@@ -382,50 +425,20 @@ for log_path in log_files:
     matches_meta.append(analysis["meta"])
     processed += 1
 
+    # 個別JSONをcacheにも保存し、インデックスを更新 (runner強制終了時の進捗保全)
+    cache_data_dir = CACHE_DIR / "analysis-data-cache"
+    cache_data_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(out_path, cache_data_dir / out_path.name)
+    _write_index_files(matches_meta)
+
 # ---------------------------------------------------------------------------
-# インデックス JSON を出力
+# インデックス JSON を出力 (最終確定版)
 # ---------------------------------------------------------------------------
-# 日付でソート (ファイル名に日付が含まれる場合)
-matches_meta.sort(key=lambda m: m.get("filename", ""), reverse=True)
-
-folder_groups: dict[str, list[dict]] = {}
-folder_order: list[str] = []
-for meta in matches_meta:
-    folder_id = meta.get("gdrive_folder_id") or "root"
-    if folder_id not in folder_groups:
-        folder_groups[folder_id] = []
-        folder_order.append(folder_id)
-    folder_groups[folder_id].append(meta)
-
-folder_summaries = [
-    _folder_summary(folder_id, folder_groups[folder_id])
-    for folder_id in folder_order
-]
-
-for old_index in OUTPUT_FOLDER_INDEX_DIR.glob("*.json"):
-    old_index.unlink()
-
-for folder in folder_summaries:
-    folder_matches = folder_groups[folder["id"]]
-    out_path = OUTPUT_FOLDER_INDEX_DIR / f"{folder['id']}.json"
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {"folder": folder, "matches": folder_matches},
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-with open(OUTPUT_INDEX, "w", encoding="utf-8") as f:
-    json.dump(
-        {"matches": matches_meta, "folders": folder_summaries},
-        f,
-        ensure_ascii=False,
-        indent=2,
-    )
+_write_index_files(matches_meta)
+folder_count = len({m.get("gdrive_folder_id") or "root" for m in matches_meta})
 
 print(
     f"\n完了: 新規解析 {processed} 試合, スキップ {skipped} 試合, エラー {errors} 試合"
 )
 print(f"インデックス出力: {OUTPUT_INDEX} ({len(matches_meta)} 試合)")
-print(f"フォルダ別インデックス出力: {OUTPUT_FOLDER_INDEX_DIR} ({len(folder_summaries)} フォルダ)")
+print(f"フォルダ別インデックス出力: {OUTPUT_FOLDER_INDEX_DIR} ({folder_count} フォルダ)")

@@ -200,7 +200,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p cache/reallog public/analysis-data public/analysis-folders
+          mkdir -p cache/reallog/analysis-data-cache cache/reallog/analysis-folders-cache public/analysis-data public/analysis-folders
           cp -r cache/reallog/analysis-data-cache/. public/analysis-data/ 2>/dev/null || true
           cp -r cache/reallog/analysis-folders-cache/. public/analysis-folders/ 2>/dev/null || true
           cp cache/reallog/analysis-index.json public/analysis-index.json 2>/dev/null || true
@@ -216,12 +216,9 @@ jobs:
             INCREMENTAL_FLAG="--incremental"
           fi
           python -u scripts/reallog_collector.py $INCREMENTAL_FLAG --max-reanalyze 5
-          mkdir -p cache/reallog/analysis-data-cache cache/reallog/analysis-folders-cache
-          cp -r public/analysis-data/. cache/reallog/analysis-data-cache/ 2>/dev/null || true
-          cp -r public/analysis-folders/. cache/reallog/analysis-folders-cache/ 2>/dev/null || true
-          cp public/analysis-index.json cache/reallog/ 2>/dev/null || true
 
       - name: Upload artifact
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: reallog-data
@@ -233,6 +230,13 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: [collect-build-data, collect-match-data, collect-goal-scenes, collect-reallog-data]
+    if: >-
+      always() &&
+      needs.collect-build-data.result == 'success' &&
+      needs.collect-match-data.result == 'success' &&
+      needs.collect-goal-scenes.result == 'success' &&
+      (needs.collect-reallog-data.result == 'success' ||
+       needs.collect-reallog-data.result == 'failure')
     permissions:
       pages: write
       id-token: write
