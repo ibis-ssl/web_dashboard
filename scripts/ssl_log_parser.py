@@ -18,6 +18,7 @@ from collections import deque
 import gzip
 import io
 import math
+import re
 import struct
 import sys
 import os
@@ -739,6 +740,117 @@ def _extract_score_timeline(referee_snapshots: list, start_ns: int) -> list[dict
     return timeline
 
 
+_PLACEHOLDER_TEAM_NAMES = frozenset({"", "unknown"})
+_FILENAME_MATCH_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}_"
+    r"(?:UNKNOWN_MATCH|GROUP_PHASE|ELIMINATION_PHASE|FRIENDLY)_"
+    r"(?P<yellow>.+)-vs-(?P<blue>.+?)(?:_SSL\d+)?$"
+)
+
+
+def _base_from_log_filename(filename: str) -> str:
+    base = os.path.splitext(os.path.basename(filename))[0]
+    if base.endswith(".log"):
+        base = base[:-4]
+    return base
+
+
+def _normalize_team_name(name: str) -> str:
+    return name.strip().replace("_", " ")
+
+
+def _is_placeholder_team_name(name: str) -> bool:
+    return name.strip().lower() in _PLACEHOLDER_TEAM_NAMES
+
+
+def _team_name_from_ref(ref, team_key: str) -> str:
+    try:
+        team = getattr(ref, team_key)
+        if team.HasField("name"):
+            return _normalize_team_name(team.name)
+    except Exception:
+        pass
+    return ""
+
+
+def _score_from_ref(ref) -> tuple[int, int]:
+    try:
+        return int(ref.yellow.score), int(ref.blue.score)
+    except Exception:
+        return 0, 0
+
+
+def _has_match_identity(ref) -> bool:
+    yellow_name = _team_name_from_ref(ref, "yellow")
+    blue_name = _team_name_from_ref(ref, "blue")
+    yellow_score, blue_score = _score_from_ref(ref)
+    return (
+        not _is_placeholder_team_name(yellow_name)
+        or not _is_placeholder_team_name(blue_name)
+        or yellow_score != 0
+        or blue_score != 0
+    )
+
+
+def _is_terminal_reset_referee(ref) -> bool:
+    yellow_name = _team_name_from_ref(ref, "yellow")
+    blue_name = _team_name_from_ref(ref, "blue")
+    yellow_score, blue_score = _score_from_ref(ref)
+    return (
+        _is_placeholder_team_name(yellow_name)
+        and _is_placeholder_team_name(blue_name)
+        and yellow_score == 0
+        and blue_score == 0
+    )
+
+
+def _filter_referee_terminal_resets(referee_snapshots: list) -> list:
+    """試合後に混入する Unknown/Unknown 0-0 のリセット状態を除外する。"""
+    filtered: list = []
+    seen_match_identity = False
+
+    for timestamp_ns, ref in referee_snapshots:
+        if seen_match_identity and _is_terminal_reset_referee(ref):
+            continue
+
+        filtered.append((timestamp_ns, ref))
+        if _has_match_identity(ref):
+            seen_match_identity = True
+
+    return filtered or referee_snapshots
+
+
+def _team_names_from_filename(filename: str) -> tuple[str, str] | None:
+    match = _FILENAME_MATCH_RE.match(_base_from_log_filename(filename))
+    if not match:
+        return None
+    return (
+        _normalize_team_name(match.group("yellow")),
+        _normalize_team_name(match.group("blue")),
+    )
+
+
+def _extract_team_names(referee_snapshots: list, filename: str) -> tuple[str, str]:
+    team_yellow, team_blue = "", ""
+
+    for _timestamp_ns, ref in referee_snapshots:
+        yellow_name = _team_name_from_ref(ref, "yellow")
+        blue_name = _team_name_from_ref(ref, "blue")
+        if not _is_placeholder_team_name(yellow_name):
+            team_yellow = yellow_name
+        if not _is_placeholder_team_name(blue_name):
+            team_blue = blue_name
+
+    filename_names = _team_names_from_filename(filename)
+    if filename_names:
+        if not team_yellow:
+            team_yellow = filename_names[0]
+        if not team_blue:
+            team_blue = filename_names[1]
+
+    return team_yellow or "Yellow", team_blue or "Blue"
+
+
 def _extract_events_timeline(referee_snapshots: list, start_ns: int) -> list[dict]:
     """ゲームイベントのタイムライン。game_events は累積なので差分のみ処理。"""
     events: list[dict] = []
@@ -946,6 +1058,8 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
             except Exception:
                 pass
 
+    referee_snapshots = _filter_referee_terminal_resets(referee_snapshots)
+
     # 開始時刻の基準
     start_ns = position_frames[0]["t_ns"] if position_frames else (
         referee_snapshots[0][0] if referee_snapshots else 0
@@ -956,29 +1070,18 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
     duration_sec = round((end_ns - start_ns) / 1e9, 1)
 
     # チーム名・最終スコア
-    team_yellow, team_blue = "Yellow", "Blue"
+    team_yellow, team_blue = _extract_team_names(referee_snapshots, filename)
     final_score = {"yellow": 0, "blue": 0}
     if referee_snapshots:
         last_ref = referee_snapshots[-1][1]
-        try:
-            if last_ref.yellow.HasField("name"):
-                team_yellow = last_ref.yellow.name
-        except Exception:
-            pass
-        try:
-            if last_ref.blue.HasField("name"):
-                team_blue = last_ref.blue.name
-        except Exception:
-            pass
+        yellow_score, blue_score = _score_from_ref(last_ref)
         final_score = {
-            "yellow": int(last_ref.yellow.score),
-            "blue": int(last_ref.blue.score),
+            "yellow": yellow_score,
+            "blue": blue_score,
         }
 
     # ファイル名からID生成
-    base = os.path.splitext(os.path.basename(filename))[0]
-    if base.endswith(".log"):
-        base = base[:-4]
+    base = _base_from_log_filename(filename)
     match_id = base.replace(" ", "_").replace("/", "_").replace("\\", "_")
 
     ball_heatmap, yellow_heatmap, blue_heatmap = _compute_all_heatmaps(position_frames)
