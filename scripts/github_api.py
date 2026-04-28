@@ -26,6 +26,10 @@ class GitHubWorkflowAPI:
             endpoint, headers=self.headers, params=payloads
         ).json()
 
+        if "workflow_runs" not in first_page_response:
+            raise RuntimeError(
+                f"GitHub API エラー: {first_page_response.get('message', first_page_response)}"
+            )
         workflow_runs = first_page_response["workflow_runs"]
 
         print(f"Total count: {first_page_response['total_count']}")
