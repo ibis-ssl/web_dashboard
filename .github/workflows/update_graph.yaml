@@ -196,9 +196,7 @@ jobs:
           restore-keys: |
             cache-reallog-
 
-      - name: Analyze real game logs
-        timeout-minutes: 7
-        continue-on-error: true
+      - name: Prepare reallog files
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -213,26 +211,35 @@ jobs:
               gh run download "$PREVIOUS_RUN_ID" --repo "${{ github.repository }}" --name reallog-data --dir public 2>/dev/null || true
             fi
           fi
+          if [ ! -f public/analysis-index.json ]; then
+            echo '{"matches":[],"folders":[]}' > public/analysis-index.json
+          fi
+
+      - name: Upload initial reallog artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: reallog-data
+          path: |
+            public/analysis-index.json
+            public/analysis-folders/
+            public/analysis-data/
+
+      - name: Analyze real game logs
+        timeout-minutes: 7
+        continue-on-error: true
+        run: |
           INCREMENTAL_FLAG=""
           if [ "${{ needs.detect-mode.outputs.mode }}" = "incremental" ]; then
             INCREMENTAL_FLAG="--incremental"
           fi
           python -u scripts/reallog_collector.py $INCREMENTAL_FLAG --max-reanalyze 5
 
-      - name: Ensure artifact files exist
-        if: always()
-        run: |
-          mkdir -p public/analysis-data public/analysis-folders
-          if [ ! -f public/analysis-index.json ]; then
-            echo '{"matches":[],"folders":[]}' > public/analysis-index.json
-            echo "WARN: analysis-index.json が無かったので空構造を生成しました"
-          fi
-
-      - name: Upload artifact
+      - name: Upload final reallog artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: reallog-data
+          overwrite: true
           path: |
             public/analysis-index.json
             public/analysis-folders/
