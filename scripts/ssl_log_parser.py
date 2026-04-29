@@ -1023,8 +1023,71 @@ def _goal_scenes_from_parsed(position_frames: list[dict], referee_snapshots: lis
     return scenes
 
 
+def _build_robot_team_stats(team: str, robot_stats: dict) -> dict:
+    """_compute_match_stats の _team_stats を外部関数として切り出し。"""
+    items = [(rid, s) for (t, rid), s in robot_stats.items() if t == team]
+    if not items:
+        return {"total_distance_m": 0.0, "fastest": {"id": -1, "max_speed_ms": 0.0},
+                "total_sprint_count": 0, "robots": []}
+    fastest_id, fastest_s = max(items, key=lambda x: x[1]["max_spd"])
+    return {
+        "total_distance_m": round(sum(s["dist_mm"] for _, s in items) / 1000.0, 1),
+        "fastest": {"id": fastest_id, "max_speed_ms": round(fastest_s["max_spd"], 2)},
+        "total_sprint_count": sum(s["sprint_count"] for _, s in items),
+        "robots": sorted([
+            {"id": rid, "max_speed_ms": round(s["max_spd"], 2),
+             "total_distance_m": round(s["dist_mm"] / 1000.0, 1),
+             "sprint_count": s["sprint_count"]}
+            for rid, s in items
+        ], key=lambda x: x["id"]),
+    }
+
+
+def _build_motion_team_result(td: dict) -> dict:
+    """_compute_motion_analysis の _build_team_result を外部関数として切り出し。"""
+    n_speed = len(td["speed_samples"])
+    valid = n_speed >= _MOTION_MIN_SAMPLES
+    limits: dict = {"sample_count": n_speed, "valid": valid}
+    if valid:
+        def _pct(samples: list[float], p: float) -> float:
+            s = sorted(samples)
+            return round(s[min(int(len(s) * p), len(s) - 1)], 2)
+        limits["velocity_limit"] = _pct(td["speed_samples"], 0.995)
+        limits["accel_limit"]    = _pct(td["accel_samples"], 0.75) if td["accel_samples"] else 0.0
+        limits["decel_limit"]    = _pct(td["decel_samples"], 0.95) if td["decel_samples"] else 0.0
+    return {
+        "speed_histogram": {"bin_width": _MOTION_SPEED_BIN, "bins": td["speed_hist"]},
+        "speed_accel_heatmap": {
+            "speed_bin_width": _MOTION_SPEED_BIN, "speed_max": _MOTION_SPEED_MAX,
+            "accel_bin_width": _MOTION_ACCEL_BIN, "accel_min": _MOTION_ACCEL_MIN,
+            "accel_max": _MOTION_ACCEL_MAX,
+            "data": [[sb, ab, cnt] for (sb, ab), cnt in td["sa_grid"].items()],
+        },
+        "directional_accel": {
+            "bin_width": _MOTION_ACCEL_BIN, "accel_min": _MOTION_ACCEL_MIN,
+            "accel_max": _MOTION_ACCEL_MAX,
+            "data": [[axb, ayb, cnt] for (axb, ayb), cnt in td["da_grid"].items()],
+        },
+        "limits": limits,
+    }
+
+
+def _scan_has_tracker(data: bytes) -> bool:
+    """ログにTrackerデータが含まれるか高速判定 (protobufパースなし・ヘッダーのみ走査)。"""
+    offset = 16  # SSL_LOG_HEADER(12) + version(4)
+    while offset + 16 <= len(data):
+        msg_type = struct.unpack_from(">i", data, offset + 8)[0]
+        msg_size = struct.unpack_from(">i", data, offset + 12)[0]
+        if msg_type == MSG_TYPE_TRACKER:
+            return True
+        if msg_size < 0:
+            break
+        offset += 16 + msg_size
+    return False
+
+
 def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
-    """SSL game log (.log.gz) をフル解析して詳細分析データを返す。
+    """SSL game log (.log.gz) をフル解析。position_frames を蓄積せず1パスでストリーミング処理する。
 
     Returns:
         meta, replay_frames, ball_heatmap, robot_heatmaps,
@@ -1039,69 +1102,304 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
         data = dec.decompress(log_gz_bytes)
         data += dec.flush()
 
-    referee_snapshots: list[tuple[int, object]] = []
-    position_frames: list[dict] = []
-    has_tracker = False
+    # TrackerとVisionが混在するログに備え、事前スキャンでmessage typeを確定
+    use_tracker = _scan_has_tracker(data)
+    _accept = {MSG_TYPE_TRACKER} if use_tracker else {MSG_TYPE_VISION_2010, MSG_TYPE_VISION_2014}
 
+    # ストリーミング状態
+    referee_snapshots: list[tuple[int, object]] = []
+    first_frame_ns: int | None = None
+    last_frame_ns: int = 0
+
+    # ヒートマップ集計
+    _ball_grid:   dict[tuple[int, int], int] = {}
+    _yell_grid:   dict[tuple[int, int], int] = {}
+    _blue_grid:   dict[tuple[int, int], int] = {}
+
+    # マッチ統計集計
+    _bmax = 0.0; _bsum = 0.0; _bcnt = 0; _bdist = 0.0; _bkick = 0
+    _bpos = 0; _bneg = 0; _prev_bspd = 0.0
+    _robot_stats: dict[tuple[str, int], dict] = {}
+    _pf: dict | None = None          # prev frame
+    _pym: dict[int, dict] = {}       # prev yellow map
+    _pbm: dict[int, dict] = {}       # prev blue map
+
+    # モーション分析集計
+    _SN = int(_MOTION_SPEED_MAX / _MOTION_SPEED_BIN)
+    _AN = int((_MOTION_ACCEL_MAX - _MOTION_ACCEL_MIN) / _MOTION_ACCEL_BIN)
+    def _new_td() -> dict:
+        return {"speed_hist": [0] * _SN, "sa_grid": {}, "da_grid": {},
+                "speed_samples": [], "accel_samples": [], "decel_samples": []}
+    _mt = {"yellow": _new_td(), "blue": _new_td()}
+    _rh: dict[tuple[str, int], deque] = {}
+
+    # リプレイサンプリング
+    _riv = int(1e9 / REPLAY_FPS)
+    _rnext: int | None = None
+    _rprev: dict | None = None
+    _replay: list[dict] = []
+
+    # ポゼッション集計
+    _PIV = int(5.0 * 1e9)
+    _pw_start: int | None = None
+    _pyc = 0; _ptc = 0
+    _pts: list[float] = []; _prs: list[float] = []
+
+    # ゴールシーン用循環バッファ (SCENE_DURATION_SEC + 余裕5秒分)
+    _BUF_MAX = int((SCENE_DURATION_SEC + 5.0) * 150 + 1)
+    _sbuf: deque[dict] = deque(maxlen=_BUF_MAX)
+    # ゴールスナップショット: (goal_ts_ns, team_int, scored_by, y_after, b_after, frames)
+    _gsnaps: list[tuple[int, int, str, int, int, list[dict]]] = []
+    _pys = -1; _pbs = -1  # prev yellow/blue score
+
+    def _on_frame(frame: dict) -> None:
+        nonlocal first_frame_ns, last_frame_ns, _rnext, _rprev
+        nonlocal _bmax, _bsum, _bcnt, _bdist, _bkick, _bpos, _bneg, _prev_bspd
+        nonlocal _pf, _pym, _pbm, _pw_start, _pyc, _ptc
+
+        t = frame["t_ns"]
+        if first_frame_ns is None:
+            first_frame_ns = t; _rnext = t; _pw_start = t
+        last_frame_ns = t
+
+        ball = frame.get("ball")
+        yr = frame.get("robots_yellow", [])
+        br = frame.get("robots_blue", [])
+
+        # ヒートマップ
+        if ball:
+            bx = max(0, min(_HEATMAP_BINS_X - 1, int((ball.get("x", 0) - _FIELD_X_MIN) / _HEATMAP_BIN_SIZE_MM)))
+            by = max(0, min(_HEATMAP_BINS_Y - 1, int((ball.get("y", 0) - _FIELD_Y_MIN) / _HEATMAP_BIN_SIZE_MM)))
+            _ball_grid[(bx, by)] = _ball_grid.get((bx, by), 0) + 1
+        for r in yr:
+            bx = max(0, min(_HEATMAP_BINS_X - 1, int((r.get("x", 0) - _FIELD_X_MIN) / _HEATMAP_BIN_SIZE_MM)))
+            by = max(0, min(_HEATMAP_BINS_Y - 1, int((r.get("y", 0) - _FIELD_Y_MIN) / _HEATMAP_BIN_SIZE_MM)))
+            _yell_grid[(bx, by)] = _yell_grid.get((bx, by), 0) + 1
+        for r in br:
+            bx = max(0, min(_HEATMAP_BINS_X - 1, int((r.get("x", 0) - _FIELD_X_MIN) / _HEATMAP_BIN_SIZE_MM)))
+            by = max(0, min(_HEATMAP_BINS_Y - 1, int((r.get("y", 0) - _FIELD_Y_MIN) / _HEATMAP_BIN_SIZE_MM)))
+            _blue_grid[(bx, by)] = _blue_grid.get((bx, by), 0) + 1
+
+        # マッチ統計
+        if ball:
+            if ball.get("x", 0) > 0: _bpos += 1
+            else: _bneg += 1
+        if _pf is not None:
+            dt = t - _pf["t_ns"]
+            if _STATS_MIN_DT_NS <= dt <= _STATS_MAX_DT_NS:
+                pb = _pf.get("ball")
+                if ball and pb:
+                    spd = ball.get("vel_ms")
+                    if spd is not None:
+                        if spd > _bmax: _bmax = spd
+                        _bsum += spd; _bcnt += 1
+                        _bdist += math.hypot(ball.get("x", 0) - pb.get("x", 0),
+                                             ball.get("y", 0) - pb.get("y", 0))
+                        if spd - _prev_bspd >= _KICK_DETECT_THRESHOLD: _bkick += 1
+                        _prev_bspd = spd
+                    else:
+                        _prev_bspd = 0.0
+                else:
+                    _prev_bspd = 0.0
+                for tk, cur, prev_map in (("yellow", yr, _pym), ("blue", br, _pbm)):
+                    for r in cur:
+                        rid = r["id"]; key = (tk, rid)
+                        if key not in _robot_stats:
+                            _robot_stats[key] = {"dist_mm": 0.0, "max_spd": 0.0,
+                                                  "sprint_count": 0, "last_sprint_ns": -_SPRINT_COOLDOWN_NS}
+                        pr = prev_map.get(rid)
+                        if pr is None: continue
+                        rspd = r.get("vel_ms")
+                        if rspd is None: continue
+                        rs = _robot_stats[key]
+                        rs["dist_mm"] += math.hypot(r["x"] - pr["x"], r["y"] - pr["y"])
+                        if rspd > rs["max_spd"]: rs["max_spd"] = rspd
+                        if rspd >= _SPRINT_THRESHOLD and t - rs["last_sprint_ns"] >= _SPRINT_COOLDOWN_NS:
+                            rs["sprint_count"] += 1; rs["last_sprint_ns"] = t
+        _pf = frame
+        _pym = {r["id"]: r for r in yr}
+        _pbm = {r["id"]: r for r in br}
+
+        # モーション分析
+        for tk, robots in (("yellow", yr), ("blue", br)):
+            td = _mt[tk]
+            for r in robots:
+                spd = r.get("vel_ms")
+                if spd is None: continue
+                if spd >= _MOTION_MIN_SPEED_MS:
+                    sb = min(int(spd / _MOTION_SPEED_BIN), _SN - 1)
+                    td["speed_hist"][sb] += 1; td["speed_samples"].append(spd)
+                vx = r.get("vel_x"); vy = r.get("vel_y")
+                theta = r.get("theta_rad", r.get("theta", 0.0))
+                if vx is None or vy is None: continue
+                key = (tk, r["id"])
+                if key not in _rh: _rh[key] = deque(maxlen=_MOTION_FRAME_OFFSET + 1)
+                hist = _rh[key]; hist.append((t, vx, vy, spd, theta))
+                if len(hist) < _MOTION_FRAME_OFFSET + 1: continue
+                t0, vx0, vy0, spd0, th0 = hist[0]
+                dt2 = t - t0
+                if not (_STATS_MIN_DT_NS <= dt2 <= _STATS_MAX_DT_NS * 10): continue
+                dt2s = dt2 / 1e9
+                ax = (vx - vx0) / dt2s; ay = (vy - vy0) / dt2s
+                amag = math.hypot(ax, ay)
+                asig = amag if spd >= spd0 else -amag
+                if asig > 0: td["accel_samples"].append(asig)
+                elif asig < 0: td["decel_samples"].append(-asig)
+                mspd = (spd + spd0) / 2.0
+                if mspd >= _MOTION_MIN_SPEED_MS:
+                    sb2 = min(int(mspd / _MOTION_SPEED_BIN), _SN - 1)
+                    if _MOTION_ACCEL_MIN <= asig <= _MOTION_ACCEL_MAX:
+                        ab2 = min(int((asig - _MOTION_ACCEL_MIN) / _MOTION_ACCEL_BIN), _AN - 1)
+                        td["sa_grid"][(sb2, ab2)] = td["sa_grid"].get((sb2, ab2), 0) + 1
+                thm = (theta + th0) / 2.0; ct = math.cos(thm); st = math.sin(thm)
+                axl = ax * ct + ay * st; ayl = -ax * st + ay * ct
+                if _MOTION_ACCEL_MIN <= axl <= _MOTION_ACCEL_MAX and \
+                   _MOTION_ACCEL_MIN <= ayl <= _MOTION_ACCEL_MAX:
+                    axb = min(int((axl - _MOTION_ACCEL_MIN) / _MOTION_ACCEL_BIN), _AN - 1)
+                    ayb = min(int((ayl - _MOTION_ACCEL_MIN) / _MOTION_ACCEL_BIN), _AN - 1)
+                    td["da_grid"][(axb, ayb)] = td["da_grid"].get((axb, ayb), 0) + 1
+
+        # リプレイサンプリング (REPLAY_FPS 間隔で最近傍フレームを選択)
+        assert _rnext is not None
+        while _rnext <= t:
+            best = frame
+            if _rprev is not None and abs(_rprev["t_ns"] - _rnext) < abs(t - _rnext):
+                best = _rprev
+            _replay.append({
+                "t_sec": round((_rnext - first_frame_ns) / 1e9, 2),
+                "ball": best.get("ball"),
+                "robots_yellow": [{k: v for k, v in r.items() if k not in _REPLAY_FRAME_EXCLUDE}
+                                   for r in best.get("robots_yellow", [])],
+                "robots_blue":   [{k: v for k, v in r.items() if k not in _REPLAY_FRAME_EXCLUDE}
+                                   for r in best.get("robots_blue", [])],
+            })
+            _rnext += _riv
+        _rprev = frame
+
+        # ポゼッション集計 (5秒ウィンドウ)
+        assert _pw_start is not None
+        while t >= _pw_start + _PIV:
+            _pts.append(round((_pw_start - first_frame_ns) / 1e9, 1))
+            _prs.append(round(_pyc / _ptc, 3) if _ptc > 0 else 0.5)
+            _pyc = 0; _ptc = 0; _pw_start += _PIV
+        if ball:
+            bxv = ball.get("x", 0); byv = ball.get("y", 0)
+            md2 = float("inf"); cl = None
+            for r in yr:
+                d2 = (r["x"] - bxv) ** 2 + (r["y"] - byv) ** 2
+                if d2 < md2: md2 = d2; cl = "yellow"
+            for r in br:
+                d2 = (r["x"] - bxv) ** 2 + (r["y"] - byv) ** 2
+                if d2 < md2: md2 = d2; cl = "blue"
+            if cl:
+                _ptc += 1
+                if cl == "yellow": _pyc += 1
+
+        # ゴールシーン用循環バッファ
+        _sbuf.append(frame)
+
+    def _on_referee(ts: int, ref) -> None:
+        nonlocal _pys, _pbs
+        referee_snapshots.append((ts, ref))
+        try:
+            y = int(ref.yellow.score); b = int(ref.blue.score)
+        except Exception:
+            return
+        if _pys < 0:
+            _pys = y; _pbs = b; return
+        scored_by = None; team_int = None
+        if y > _pys:   scored_by = "yellow"; team_int = _TEAM_YELLOW
+        elif b > _pbs: scored_by = "blue";   team_int = _TEAM_BLUE
+        if scored_by and _sbuf:
+            _gsnaps.append((ts, team_int, scored_by, y, b, list(_sbuf)))
+        _pys = y; _pbs = b
+
+    # メインパース (1パス・position_frames を蓄積しない)
     for timestamp_ns, msg_type, raw in _iter_messages(data):
         if msg_type == MSG_TYPE_REFEREE:
             try:
                 ref = ssl_gc_referee_message_pb2.Referee()
                 ref.ParseFromString(raw)
-                referee_snapshots.append((timestamp_ns, ref))
+                _on_referee(timestamp_ns, ref)
             except Exception:
                 pass
-        elif msg_type in (MSG_TYPE_VISION_2010, MSG_TYPE_VISION_2014) and not has_tracker:
+        elif msg_type in _accept:
             try:
-                wrapper = ssl_vision_wrapper_pb2.SSL_WrapperPacket()
-                wrapper.ParseFromString(raw)
-                frame = _detection_to_frame(timestamp_ns, wrapper)
+                if use_tracker:
+                    wrapper = TrackerWrapperPacket()
+                    wrapper.ParseFromString(raw)
+                    frame = _tracker_to_frame(timestamp_ns, wrapper)
+                else:
+                    wrapper = ssl_vision_wrapper_pb2.SSL_WrapperPacket()
+                    wrapper.ParseFromString(raw)
+                    frame = _detection_to_frame(timestamp_ns, wrapper)
                 if frame:
-                    position_frames.append(frame)
+                    _on_frame(frame)
             except Exception:
                 pass
-        elif msg_type == MSG_TYPE_TRACKER:
-            try:
-                wrapper = TrackerWrapperPacket()
-                wrapper.ParseFromString(raw)
-                frame = _tracker_to_frame(timestamp_ns, wrapper)
-                if frame:
-                    if not has_tracker:
-                        has_tracker = True
-                        position_frames = []
-                    position_frames.append(frame)
-            except Exception:
-                pass
+
+    del data  # 展開済みバイト列を解放
 
     referee_snapshots = _filter_referee_terminal_resets(referee_snapshots)
 
-    # 開始時刻の基準
-    start_ns = position_frames[0]["t_ns"] if position_frames else (
-        referee_snapshots[0][0] if referee_snapshots else 0
-    )
-    end_ns = position_frames[-1]["t_ns"] if position_frames else (
-        referee_snapshots[-1][0] if referee_snapshots else 0
-    )
+    start_ns = first_frame_ns or (referee_snapshots[0][0] if referee_snapshots else 0)
+    end_ns   = last_frame_ns  or (referee_snapshots[-1][0] if referee_snapshots else 0)
     duration_sec = round((end_ns - start_ns) / 1e9, 1)
 
-    # チーム名・最終スコア
     team_yellow, team_blue = _extract_team_names(referee_snapshots, filename)
     final_score = {"yellow": 0, "blue": 0}
     if referee_snapshots:
-        last_ref = referee_snapshots[-1][1]
-        yellow_score, blue_score = _score_from_ref(last_ref)
-        final_score = {
-            "yellow": yellow_score,
-            "blue": blue_score,
-        }
+        ys, bs = _score_from_ref(referee_snapshots[-1][1])
+        final_score = {"yellow": ys, "blue": bs}
 
-    # ファイル名からID生成
     base = _base_from_log_filename(filename)
     match_id = base.replace(" ", "_").replace("/", "_").replace("\\", "_")
 
-    ball_heatmap, yellow_heatmap, blue_heatmap = _compute_all_heatmaps(position_frames)
-    match_stats = _compute_match_stats(position_frames)
-    motion_analysis = _compute_motion_analysis(position_frames)
+    # ヒートマップ出力
+    def _to_list(g: dict) -> list[list[int]]:
+        return [[bx, by, cnt] for (bx, by), cnt in g.items()]
+
+    # マッチ統計出力
+    bt = _bpos + _bneg
+    match_stats = {
+        "sprint_threshold_ms": _SPRINT_THRESHOLD,
+        "ball": {
+            "max_speed_ms": round(_bmax, 2),
+            "avg_speed_ms": round(_bsum / _bcnt if _bcnt > 0 else 0.0, 2),
+            "total_distance_m": round(_bdist / 1000.0, 1),
+            "kick_count": _bkick,
+            "territory": {
+                "positive_pct": round(_bpos / bt * 100, 1) if bt > 0 else 50.0,
+                "negative_pct": round(_bneg / bt * 100, 1) if bt > 0 else 50.0,
+            },
+        },
+        "robots": {
+            "yellow": _build_robot_team_stats("yellow", _robot_stats),
+            "blue":   _build_robot_team_stats("blue",   _robot_stats),
+        },
+    }
+
+    # ゴールシーン出力 (循環バッファのスナップショットから抽出)
+    possible_goals = _collect_possible_goals(referee_snapshots)
+    goal_scenes: list[dict] = []
+    for gi, (goal_ts, team_int, scored_by, y_aft, b_aft, frames_snap) in enumerate(_gsnaps):
+        scene_end = _find_possible_goal_time(possible_goals, goal_ts, team_int)
+        scene_start = scene_end - int(SCENE_DURATION_SEC * 1e9)
+        raw_sc = [f for f in frames_snap if scene_start <= f["t_ns"] <= scene_end]
+        if raw_sc:
+            goal_scenes.append({
+                "goal_index": gi,
+                "scored_by": scored_by,
+                "score_after": {"yellow": int(y_aft), "blue": int(b_aft)},
+                "duration_sec": SCENE_DURATION_SEC,
+                "fps": OUTPUT_FPS,
+                "frames": _downsample_frames(raw_sc, scene_end, SCENE_DURATION_SEC, OUTPUT_FPS),
+            })
+
+    # ポゼッション出力 (最終ウィンドウのフラッシュ)
+    if _ptc > 0 and _pw_start is not None and first_frame_ns is not None:
+        _pts.append(round((_pw_start - first_frame_ns) / 1e9, 1))
+        _prs.append(round(_pyc / _ptc, 3))
 
     return {
         "meta": {
@@ -1113,13 +1411,16 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
             "duration_sec": duration_sec,
         },
         "match_stats": match_stats,
-        "motion_analysis": motion_analysis,
-        "replay_frames": _downsample_replay_frames(position_frames, start_ns, REPLAY_FPS),
-        "ball_heatmap": ball_heatmap,
-        "robot_heatmaps": {"yellow": yellow_heatmap, "blue": blue_heatmap},
-        "goal_scenes": _goal_scenes_from_parsed(position_frames, referee_snapshots),
+        "motion_analysis": {
+            "yellow": _build_motion_team_result(_mt["yellow"]),
+            "blue":   _build_motion_team_result(_mt["blue"]),
+        },
+        "replay_frames": _replay,
+        "ball_heatmap":  _to_list(_ball_grid),
+        "robot_heatmaps": {"yellow": _to_list(_yell_grid), "blue": _to_list(_blue_grid)},
+        "goal_scenes": goal_scenes,
         "events": _extract_events_timeline(referee_snapshots, start_ns),
-        "possession": _compute_possession(position_frames),
+        "possession": {"timestamps": _pts, "yellow_ratio": _prs},
         "score_timeline": _extract_score_timeline(referee_snapshots, start_ns),
         "referee_commands": _extract_referee_commands(referee_snapshots, start_ns),
     }
