@@ -249,6 +249,70 @@
         padding: 48px;
         color: var(--text-secondary);
       }
+
+      /* ===== 順位表 ===== */
+      .standings-wrap {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 20px;
+      }
+
+      .standings-title {
+        font-size: 1rem;
+        font-weight: 700;
+        margin: 0 0 12px;
+        color: var(--text-primary);
+      }
+
+      .standings-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+        min-width: 480px;
+      }
+
+      .standings-table th,
+      .standings-table td {
+        padding: 8px 10px;
+        text-align: center;
+      }
+
+      .standings-table th {
+        color: var(--text-secondary);
+        font-weight: 600;
+        border-bottom: 1px solid var(--border-color);
+        white-space: nowrap;
+      }
+
+      .standings-table td.standings-team {
+        text-align: left;
+        font-weight: 600;
+      }
+
+      .standings-table tbody tr:hover { background: var(--bg-tertiary); }
+      .standings-pos { color: #4caf50; font-weight: 600; }
+      .standings-neg { color: #ef5350; font-weight: 600; }
+      .standings-pts { font-weight: 700; color: var(--text-primary); }
+
+      /* ===== 試合カード チーム統計行 ===== */
+      .match-team-stats {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 0.78rem;
+        color: var(--text-secondary);
+        gap: 4px;
+      }
+
+      .match-team-stat-y { color: #c9a800; font-variant-numeric: tabular-nums; }
+      .match-team-stat-b { color: #3B7FE0; font-variant-numeric: tabular-nums; }
+      .match-team-stat-label {
+        color: var(--text-secondary);
+        font-size: 0.73rem;
+        flex: 1;
+        text-align: center;
+      }
     </style>
   </head>
   <body>

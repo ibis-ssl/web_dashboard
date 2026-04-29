@@ -40,7 +40,7 @@ MSG_TYPE_TRACKER = 5
 
 SSL_LOG_HEADER = b"SSL_LOG_FILE"
 # extract_full_analysis() の出力スキーマや解析ロジックを実質的に変えたら必ず bump する。
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 SCENE_DURATION_SEC = 10.0
 OUTPUT_FPS = 10
 
@@ -381,6 +381,9 @@ _STATS_MAX_DT_NS = int(500e6)     # 500ms超のΔtはスキップ（フレーム
 _KICK_DETECT_THRESHOLD = 1.5      # m/s の速度増加でキック検出
 _SPRINT_THRESHOLD = 2.0           # m/s 以上でスプリント判定
 _SPRINT_COOLDOWN_NS = int(500e6)  # 同一ロボットのスプリント再検出間隔
+_SHOT_SPEED_THRESHOLD_MS = 3.0    # シュート判定の最低ボール速度 (m/s)
+_SHOT_COOLDOWN_NS = int(1500e6)   # 同一チームの連続シュート判定の最小間隔
+_SHOT_MAX_ROBOT_DIST_MM = 600     # キック帰属の最大ロボット距離 (mm)
 
 
 def _compute_match_stats(frames: list[dict]) -> dict:
@@ -1120,6 +1123,8 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
     _bmax = 0.0; _bsum = 0.0; _bcnt = 0; _bdist = 0.0; _bkick = 0
     _bpos = 0; _bneg = 0; _prev_bspd = 0.0
     _robot_stats: dict[tuple[str, int], dict] = {}
+    _shot_counts: dict[str, int] = {"yellow": 0, "blue": 0}
+    _last_shot_ns: dict[str, int] = {"yellow": -int(2e18), "blue": -int(2e18)}
     _pf: dict | None = None          # prev frame
     _pym: dict[int, dict] = {}       # prev yellow map
     _pbm: dict[int, dict] = {}       # prev blue map
@@ -1195,7 +1200,20 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
                         _bsum += spd; _bcnt += 1
                         _bdist += math.hypot(ball.get("x", 0) - pb.get("x", 0),
                                              ball.get("y", 0) - pb.get("y", 0))
-                        if spd - _prev_bspd >= _KICK_DETECT_THRESHOLD: _bkick += 1
+                        if spd - _prev_bspd >= _KICK_DETECT_THRESHOLD:
+                            _bkick += 1
+                            if spd >= _SHOT_SPEED_THRESHOLD_MS:
+                                bxk = ball.get("x", 0); byk = ball.get("y", 0)
+                                md_y = min(((r["x"]-bxk)**2+(r["y"]-byk)**2 for r in _pym.values()), default=float("inf"))
+                                md_b = min(((r["x"]-bxk)**2+(r["y"]-byk)**2 for r in _pbm.values()), default=float("inf"))
+                                shot_team = None
+                                if md_y < md_b and md_y <= _SHOT_MAX_ROBOT_DIST_MM**2:
+                                    shot_team = "yellow"
+                                elif md_b < md_y and md_b <= _SHOT_MAX_ROBOT_DIST_MM**2:
+                                    shot_team = "blue"
+                                if shot_team and t - _last_shot_ns[shot_team] >= _SHOT_COOLDOWN_NS:
+                                    _shot_counts[shot_team] += 1
+                                    _last_shot_ns[shot_team] = t
                         _prev_bspd = spd
                     else:
                         _prev_bspd = 0.0
@@ -1401,6 +1419,42 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
         _pts.append(round((_pw_start - first_frame_ns) / 1e9, 1))
         _prs.append(round(_pyc / _ptc, 3))
 
+    events = _extract_events_timeline(referee_snapshots, start_ns)
+
+    # ボールプレースメント統計
+    _placement: dict[str, dict[str, int]] = {
+        "yellow": {"succeeded": 0, "failed": 0},
+        "blue":   {"succeeded": 0, "failed": 0},
+    }
+    for _ev in events:
+        _tm = _ev["by_team"]
+        if _tm in _placement:
+            if _ev["type"] == 5:   # PLACEMENT_SUCCEEDED
+                _placement[_tm]["succeeded"] += 1
+            elif _ev["type"] == 3: # PLACEMENT_FAILED
+                _placement[_tm]["failed"] += 1
+
+    def _prate(s: dict) -> float | None:
+        total = s["succeeded"] + s["failed"]
+        return round(s["succeeded"] / total * 100, 1) if total > 0 else None
+
+    team_stats = {
+        "yellow": {
+            "goals": final_score["yellow"],
+            "shots": _shot_counts["yellow"],
+            "placement_succeeded": _placement["yellow"]["succeeded"],
+            "placement_failed":    _placement["yellow"]["failed"],
+            "placement_success_rate": _prate(_placement["yellow"]),
+        },
+        "blue": {
+            "goals": final_score["blue"],
+            "shots": _shot_counts["blue"],
+            "placement_succeeded": _placement["blue"]["succeeded"],
+            "placement_failed":    _placement["blue"]["failed"],
+            "placement_success_rate": _prate(_placement["blue"]),
+        },
+    }
+
     return {
         "meta": {
             "id": match_id,
@@ -1409,7 +1463,9 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
             "teams": {"yellow": team_yellow, "blue": team_blue},
             "final_score": final_score,
             "duration_sec": duration_sec,
+            "team_stats": team_stats,
         },
+        "team_stats": team_stats,
         "match_stats": match_stats,
         "motion_analysis": {
             "yellow": _build_motion_team_result(_mt["yellow"]),
@@ -1419,7 +1475,7 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
         "ball_heatmap":  _to_list(_ball_grid),
         "robot_heatmaps": {"yellow": _to_list(_yell_grid), "blue": _to_list(_blue_grid)},
         "goal_scenes": goal_scenes,
-        "events": _extract_events_timeline(referee_snapshots, start_ns),
+        "events": events,
         "possession": {"timestamps": _pts, "yellow_ratio": _prs},
         "score_timeline": _extract_score_timeline(referee_snapshots, start_ns),
         "referee_commands": _extract_referee_commands(referee_snapshots, start_ns),

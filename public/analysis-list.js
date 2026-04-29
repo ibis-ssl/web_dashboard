@@ -17,7 +17,7 @@ function resultBadge(score, yName, bName) {
 }
 
 function buildMatchCard(meta) {
-  const { id, filename, teams, final_score, duration_sec, gdrive_url } = meta;
+  const { id, filename, teams, final_score, duration_sec, gdrive_url, team_stats } = meta;
   const yName = teams?.yellow || 'Yellow';
   const bName = teams?.blue   || 'Blue';
   const score = final_score || { yellow: 0, blue: 0 };
@@ -29,6 +29,30 @@ function buildMatchCard(meta) {
   const dlHtml = gdrive_url
     ? `<a href="${gdrive_url}" class="match-download-link" target="_blank" rel="noopener" title="ログファイルをダウンロード (Google Drive)" onclick="event.stopPropagation()">&#x1F4E5;</a>`
     : '';
+
+  let teamStatsHtml = '';
+  if (team_stats) {
+    const ys = team_stats.yellow;
+    const bs = team_stats.blue;
+    const yPTotal = (ys.placement_succeeded ?? 0) + (ys.placement_failed ?? 0);
+    const bPTotal = (bs.placement_succeeded ?? 0) + (bs.placement_failed ?? 0);
+    const yRate = ys.placement_success_rate;
+    const bRate = bs.placement_success_rate;
+    const yRateStr = yRate !== null && yRate !== undefined ? yRate + '%' : '–';
+    const bRateStr = bRate !== null && bRate !== undefined ? bRate + '%' : '–';
+    teamStatsHtml = `
+      <div class="match-team-stats">
+        <span class="match-team-stat-y">${ys.shots ?? 0}本</span>
+        <span class="match-team-stat-label">ショット</span>
+        <span class="match-team-stat-b">${bs.shots ?? 0}本</span>
+      </div>
+      <div class="match-team-stats">
+        <span class="match-team-stat-y">${yRateStr}${yPTotal > 0 ? ` (${ys.placement_succeeded}/${yPTotal})` : ''}</span>
+        <span class="match-team-stat-label">BP成功率</span>
+        <span class="match-team-stat-b">${bRateStr}${bPTotal > 0 ? ` (${bs.placement_succeeded}/${bPTotal})` : ''}</span>
+      </div>
+    `;
+  }
 
   const a = document.createElement('a');
   a.href = `./analysis.html?id=${encodeURIComponent(id)}`;
@@ -49,6 +73,7 @@ function buildMatchCard(meta) {
       <span class="match-result-badge ${result.cls}">${result.text}</span>
       <span class="match-duration-badge">⏱ ${formatSec(duration_sec)}</span>
     </div>
+    ${teamStatsHtml}
     <div class="match-card-filename">${filename || id}${dlHtml}</div>
   `;
   return a;
@@ -157,6 +182,67 @@ function buildFolderCard(folder) {
   return a;
 }
 
+function buildStandingsTable(matches) {
+  const teamMap = new Map();
+
+  for (const m of matches) {
+    const gy = m.final_score?.yellow ?? 0;
+    const gb = m.final_score?.blue   ?? 0;
+    const yName = m.teams?.yellow || 'Yellow';
+    const bName = m.teams?.blue   || 'Blue';
+
+    for (const name of [yName, bName]) {
+      if (!teamMap.has(name)) teamMap.set(name, { w: 0, d: 0, l: 0, gf: 0, ga: 0 });
+    }
+
+    const yt = teamMap.get(yName);
+    const bt = teamMap.get(bName);
+    yt.gf += gy; yt.ga += gb;
+    bt.gf += gb; bt.ga += gy;
+
+    if (gy > gb)      { yt.w++; bt.l++; }
+    else if (gb > gy) { bt.w++; yt.l++; }
+    else              { yt.d++; bt.d++; }
+  }
+
+  const rows = [...teamMap.entries()].sort((a, b) => {
+    const ap = a[1].w * 3 + a[1].d;
+    const bp = b[1].w * 3 + b[1].d;
+    if (bp !== ap) return bp - ap;
+    return (b[1].gf - b[1].ga) - (a[1].gf - a[1].ga);
+  });
+
+  const wrap = document.createElement('div');
+  wrap.className = 'standings-wrap';
+  const rowsHtml = rows.map(([name, s]) => {
+    const gd = s.gf - s.ga;
+    const gdCls = gd > 0 ? 'standings-pos' : gd < 0 ? 'standings-neg' : '';
+    const gdStr = gd > 0 ? `+${gd}` : String(gd);
+    return `<tr>
+      <td class="standings-team">${name}</td>
+      <td>${s.w}</td><td>${s.d}</td><td>${s.l}</td>
+      <td>${s.gf}</td><td>${s.ga}</td>
+      <td class="${gdCls}">${gdStr}</td>
+      <td class="standings-pts">${s.w * 3 + s.d}</td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <h3 class="standings-title">チーム成績</h3>
+    <div class="an-table-wrap" style="overflow-x:auto">
+      <table class="standings-table">
+        <thead><tr>
+          <th>チーム</th>
+          <th>勝</th><th>分</th><th>負</th>
+          <th>得点</th><th>失点</th><th>得失差</th><th>勝点</th>
+        </tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+  `;
+  return wrap;
+}
+
 function buildMatchSection(matches) {
   const section = document.createElement('section');
   section.className = 'match-folder-section';
@@ -233,6 +319,15 @@ function renderFolderPage(folderJson) {
     empty.textContent = '試合データがありません。';
     content.appendChild(empty);
     return;
+  }
+
+  const uniqueTeams = new Set();
+  for (const m of matches) {
+    if (m.teams?.yellow) uniqueTeams.add(m.teams.yellow);
+    if (m.teams?.blue)   uniqueTeams.add(m.teams.blue);
+  }
+  if (uniqueTeams.size >= 2) {
+    content.appendChild(buildStandingsTable(matches));
   }
 
   content.appendChild(buildMatchSection(matches));

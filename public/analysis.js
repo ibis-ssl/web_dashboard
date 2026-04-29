@@ -135,6 +135,43 @@ function renderMatchStats(stats, yName, bName) {
 }
 
 // ============================================================
+// チームプレー統計レンダリング
+// ============================================================
+function renderTeamStats(teamStats, yName, bName) {
+  const grid = document.getElementById('team-play-grid');
+  if (!grid || !teamStats) return;
+
+  const ys = teamStats.yellow;
+  const bs = teamStats.blue;
+
+  grid.appendChild(makeTeamCard({
+    title: 'ショット数',
+    subtitle: `(${(3.0).toFixed(1)} m/s 超の高速キック)`,
+    yellow: { val: ys.shots ?? 0, unit: ' 本', label: yName },
+    blue:   { val: bs.shots ?? 0, unit: ' 本', label: bName },
+  }));
+
+  const yTotal = (ys.placement_succeeded ?? 0) + (ys.placement_failed ?? 0);
+  const bTotal = (bs.placement_succeeded ?? 0) + (bs.placement_failed ?? 0);
+  const yRate = ys.placement_success_rate;
+  const bRate = bs.placement_success_rate;
+  grid.appendChild(makeTeamCard({
+    title: 'ボールプレースメント',
+    subtitle: '(成功率)',
+    yellow: {
+      val: yRate !== null && yRate !== undefined ? yRate + '%' : '–',
+      unit: yTotal > 0 ? ` (${ys.placement_succeeded}/${yTotal})` : '',
+      label: yName,
+    },
+    blue: {
+      val: bRate !== null && bRate !== undefined ? bRate + '%' : '–',
+      unit: bTotal > 0 ? ` (${bs.placement_succeeded}/${bTotal})` : '',
+      label: bName,
+    },
+  }));
+}
+
+// ============================================================
 // Canvas ベース 2D ヒートマップ描画ユーティリティ
 // ============================================================
 
@@ -582,7 +619,7 @@ function eventCategory(typeVal) {
   document.getElementById('main-content').style.display = 'block';
 
   const { meta, match_stats, motion_analysis, replay_frames, ball_heatmap, robot_heatmaps,
-          goal_scenes, events, possession, score_timeline, referee_commands } = data;
+          goal_scenes, events, possession, score_timeline, referee_commands, team_stats } = data;
 
   // ============================================================
   // ① スコアボード & ヘッダー
@@ -621,6 +658,12 @@ function eventCategory(typeVal) {
   // ② 試合統計
   // ============================================================
   if (match_stats) renderMatchStats(match_stats, yName, bName);
+  if (team_stats) {
+    renderTeamStats(team_stats, yName, bName);
+  } else {
+    const sec = document.getElementById('team-play-section');
+    if (sec) sec.style.display = 'none';
+  }
   if (motion_analysis) renderMotionAnalysis(motion_analysis, yName, bName);
 
   // ============================================================
