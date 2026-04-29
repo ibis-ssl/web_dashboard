@@ -32,6 +32,8 @@ sys.path.insert(0, os.path.join(_SCRIPT_DIR, "proto"))
 from state import ssl_gc_referee_message_pb2
 from vision import ssl_vision_wrapper_pb2
 from messages_robocup_ssl_wrapper_tracked_pb2 import TrackerWrapperPacket
+from messages_robocup_ssl_detection_tracked_pb2 import TeamColor as _TeamColor
+_TRACKER_TEAM_YELLOW = _TeamColor.Value("TEAM_COLOR_YELLOW")
 
 MSG_TYPE_VISION_2010 = 2
 MSG_TYPE_REFEREE = 3
@@ -40,7 +42,7 @@ MSG_TYPE_TRACKER = 5
 
 SSL_LOG_HEADER = b"SSL_LOG_FILE"
 # extract_full_analysis() の出力スキーマや解析ロジックを実質的に変えたら必ず bump する。
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 4
 SCENE_DURATION_SEC = 10.0
 OUTPUT_FPS = 10
 
@@ -156,24 +158,23 @@ def _tracker_to_frame(timestamp_ns: int, wrapper) -> dict | None:
         ball = {"x": int(b.pos.x * 1000), "y": int(b.pos.y * 1000)}
         if b.HasField("vel"):
             ball["vel_ms"] = math.hypot(b.vel.x, b.vel.y)
+            ball["vel_x"] = b.vel.x
+            ball["vel_y"] = b.vel.y
 
     robots_yellow = []
     robots_blue = []
-    from messages_robocup_ssl_detection_tracked_pb2 import TeamColor
     for r in tf.robots:
-        team_color = r.robot_id.team_color
         entry = {
             "id": r.robot_id.id,
             "x": int(r.pos.x * 1000),
             "y": int(r.pos.y * 1000),
-            "theta": round(r.orientation, 1),
-            "theta_rad": r.orientation,
+            "theta": r.orientation,      # replay + motion 共用 (round なし)
         }
         if r.HasField("vel"):
             entry["vel_ms"] = math.hypot(r.vel.x, r.vel.y)
             entry["vel_x"] = r.vel.x
             entry["vel_y"] = r.vel.y
-        if team_color == TeamColor.Value("TEAM_COLOR_YELLOW"):
+        if r.robot_id.team_color == _TRACKER_TEAM_YELLOW:
             robots_yellow.append(entry)
         else:
             robots_blue.append(entry)
@@ -373,6 +374,8 @@ _FIELD_X_MIN = -6000
 _FIELD_Y_MIN = -4500
 _HEATMAP_BINS_X = 120  # 12000 / 100
 _HEATMAP_BINS_Y = 90   # 9000 / 100
+_HEATMAP_BINS_X1 = _HEATMAP_BINS_X - 1
+_HEATMAP_BINS_Y1 = _HEATMAP_BINS_Y - 1
 REPLAY_FPS = 3
 
 # 統計計算用定数
@@ -513,15 +516,19 @@ def _compute_match_stats(frames: list[dict]) -> dict:
 # 動作特性分析定数 (TIGERs Mannheim ETDP 2026 §3)
 _MOTION_MIN_SPEED_MS = 0.1       # 静止ロボット除外閾値 (m/s)
 _MOTION_FRAME_OFFSET = 5         # 加速度推定のフレームオフセット (ノイズ低減)
-_MOTION_MIN_SAMPLES = 2000       # 動作限界推定に必要な最低サンプル数
+_MOTION_MIN_SAMPLES = 1000       # 動作限界推定に必要な最低サンプル数 (speed_hist の合計)
 _MOTION_SPEED_MAX = 5.0          # 速度ヒストグラム最大値 (m/s)
 _MOTION_SPEED_BIN = 0.1          # 速度ビン幅 (m/s)
 _MOTION_ACCEL_MIN = -8.0         # 加速度ヒストグラム最小値 (m/s²)
 _MOTION_ACCEL_MAX = 8.0          # 加速度ヒストグラム最大値 (m/s²)
 _MOTION_ACCEL_BIN = 0.25         # 加速度ビン幅 (m/s²)
+_MOTION_SUBSAMPLE = 3            # モーション加速度計算のサブサンプリング間隔 (Nフレームに1回)
+_POSS_SUBSAMPLE = 3              # ポゼッション計算のサブサンプリング間隔
+_AN_POS = int(_MOTION_ACCEL_MAX / _MOTION_ACCEL_BIN)  # 加速度/減速度ヒストグラムビン数 (0〜8)
 
 # リプレイフレームから除外するロボットフィールド (モーション解析専用・JSONサイズ削減)
-_REPLAY_FRAME_EXCLUDE = frozenset({"vel_x", "vel_y", "vel_ms", "theta_rad"})
+# theta_rad を theta に統合したため除外リストから外した
+_REPLAY_FRAME_EXCLUDE = frozenset({"vel_x", "vel_y", "vel_ms"})
 
 
 def _compute_motion_analysis(frames: list[dict]) -> dict:
@@ -1046,18 +1053,29 @@ def _build_robot_team_stats(team: str, robot_stats: dict) -> dict:
     }
 
 
+def _hist_pct(hist: list[int], bin_start: float, bin_width: float, p: float) -> float:
+    """ヒストグラムからパーセンタイル値を推定する。sorted() 不要で O(bins)。"""
+    total = sum(hist)
+    if total == 0:
+        return 0.0
+    target = total * p
+    cumulative = 0
+    for i, count in enumerate(hist):
+        cumulative += count
+        if cumulative >= target:
+            return round(bin_start + (i + 0.5) * bin_width, 3)
+    return round(bin_start + len(hist) * bin_width, 3)
+
+
 def _build_motion_team_result(td: dict) -> dict:
     """_compute_motion_analysis の _build_team_result を外部関数として切り出し。"""
-    n_speed = len(td["speed_samples"])
+    n_speed = sum(td["speed_hist"])
     valid = n_speed >= _MOTION_MIN_SAMPLES
     limits: dict = {"sample_count": n_speed, "valid": valid}
     if valid:
-        def _pct(samples: list[float], p: float) -> float:
-            s = sorted(samples)
-            return round(s[min(int(len(s) * p), len(s) - 1)], 2)
-        limits["velocity_limit"] = _pct(td["speed_samples"], 0.995)
-        limits["accel_limit"]    = _pct(td["accel_samples"], 0.75) if td["accel_samples"] else 0.0
-        limits["decel_limit"]    = _pct(td["decel_samples"], 0.95) if td["decel_samples"] else 0.0
+        limits["velocity_limit"] = _hist_pct(td["speed_hist"], 0.0, _MOTION_SPEED_BIN, 0.995)
+        limits["accel_limit"]    = _hist_pct(td["accel_hist"], 0.0, _MOTION_ACCEL_BIN, 0.75)
+        limits["decel_limit"]    = _hist_pct(td["decel_hist"], 0.0, _MOTION_ACCEL_BIN, 0.95)
     return {
         "speed_histogram": {"bin_width": _MOTION_SPEED_BIN, "bins": td["speed_hist"]},
         "speed_accel_heatmap": {
@@ -1134,9 +1152,11 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
     _AN = int((_MOTION_ACCEL_MAX - _MOTION_ACCEL_MIN) / _MOTION_ACCEL_BIN)
     def _new_td() -> dict:
         return {"speed_hist": [0] * _SN, "sa_grid": {}, "da_grid": {},
-                "speed_samples": [], "accel_samples": [], "decel_samples": []}
+                "accel_hist": [0] * _AN_POS, "decel_hist": [0] * _AN_POS}
     _mt = {"yellow": _new_td(), "blue": _new_td()}
     _rh: dict[tuple[str, int], deque] = {}
+    _motion_fc: int = 0   # モーション加速度計算のフレームカウンタ
+    _poss_fc: int = 0     # ポゼッション計算のフレームカウンタ
 
     # リプレイサンプリング
     _riv = int(1e9 / REPLAY_FPS)
@@ -1161,6 +1181,7 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
         nonlocal first_frame_ns, last_frame_ns, _rnext, _rprev
         nonlocal _bmax, _bsum, _bcnt, _bdist, _bkick, _bpos, _bneg, _prev_bspd
         nonlocal _pf, _pym, _pbm, _pw_start, _pyc, _ptc
+        nonlocal _motion_fc, _poss_fc
 
         t = frame["t_ns"]
         if first_frame_ns is None:
@@ -1173,16 +1194,28 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
 
         # ヒートマップ
         if ball:
-            bx = max(0, min(_HEATMAP_BINS_X - 1, int((ball.get("x", 0) - _FIELD_X_MIN) / _HEATMAP_BIN_SIZE_MM)))
-            by = max(0, min(_HEATMAP_BINS_Y - 1, int((ball.get("y", 0) - _FIELD_Y_MIN) / _HEATMAP_BIN_SIZE_MM)))
+            bx = int((ball["x"] - _FIELD_X_MIN) / _HEATMAP_BIN_SIZE_MM)
+            by = int((ball["y"] - _FIELD_Y_MIN) / _HEATMAP_BIN_SIZE_MM)
+            if bx < 0: bx = 0
+            elif bx > _HEATMAP_BINS_X1: bx = _HEATMAP_BINS_X1
+            if by < 0: by = 0
+            elif by > _HEATMAP_BINS_Y1: by = _HEATMAP_BINS_Y1
             _ball_grid[(bx, by)] = _ball_grid.get((bx, by), 0) + 1
         for r in yr:
-            bx = max(0, min(_HEATMAP_BINS_X - 1, int((r.get("x", 0) - _FIELD_X_MIN) / _HEATMAP_BIN_SIZE_MM)))
-            by = max(0, min(_HEATMAP_BINS_Y - 1, int((r.get("y", 0) - _FIELD_Y_MIN) / _HEATMAP_BIN_SIZE_MM)))
+            bx = int((r["x"] - _FIELD_X_MIN) / _HEATMAP_BIN_SIZE_MM)
+            by = int((r["y"] - _FIELD_Y_MIN) / _HEATMAP_BIN_SIZE_MM)
+            if bx < 0: bx = 0
+            elif bx > _HEATMAP_BINS_X1: bx = _HEATMAP_BINS_X1
+            if by < 0: by = 0
+            elif by > _HEATMAP_BINS_Y1: by = _HEATMAP_BINS_Y1
             _yell_grid[(bx, by)] = _yell_grid.get((bx, by), 0) + 1
         for r in br:
-            bx = max(0, min(_HEATMAP_BINS_X - 1, int((r.get("x", 0) - _FIELD_X_MIN) / _HEATMAP_BIN_SIZE_MM)))
-            by = max(0, min(_HEATMAP_BINS_Y - 1, int((r.get("y", 0) - _FIELD_Y_MIN) / _HEATMAP_BIN_SIZE_MM)))
+            bx = int((r["x"] - _FIELD_X_MIN) / _HEATMAP_BIN_SIZE_MM)
+            by = int((r["y"] - _FIELD_Y_MIN) / _HEATMAP_BIN_SIZE_MM)
+            if bx < 0: bx = 0
+            elif bx > _HEATMAP_BINS_X1: bx = _HEATMAP_BINS_X1
+            if by < 0: by = 0
+            elif by > _HEATMAP_BINS_Y1: by = _HEATMAP_BINS_Y1
             _blue_grid[(bx, by)] = _blue_grid.get((bx, by), 0) + 1
 
         # マッチ統計
@@ -1239,6 +1272,8 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
         _pbm = {r["id"]: r for r in br}
 
         # モーション分析
+        _motion_fc += 1
+        do_accel = (_motion_fc % _MOTION_SUBSAMPLE == 0)
         for tk, robots in (("yellow", yr), ("blue", br)):
             td = _mt[tk]
             for r in robots:
@@ -1246,9 +1281,10 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
                 if spd is None: continue
                 if spd >= _MOTION_MIN_SPEED_MS:
                     sb = min(int(spd / _MOTION_SPEED_BIN), _SN - 1)
-                    td["speed_hist"][sb] += 1; td["speed_samples"].append(spd)
+                    td["speed_hist"][sb] += 1
+                if not do_accel: continue
                 vx = r.get("vel_x"); vy = r.get("vel_y")
-                theta = r.get("theta_rad", r.get("theta", 0.0))
+                theta = r.get("theta", 0.0)
                 if vx is None or vy is None: continue
                 key = (tk, r["id"])
                 if key not in _rh: _rh[key] = deque(maxlen=_MOTION_FRAME_OFFSET + 1)
@@ -1261,8 +1297,12 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
                 ax = (vx - vx0) / dt2s; ay = (vy - vy0) / dt2s
                 amag = math.hypot(ax, ay)
                 asig = amag if spd >= spd0 else -amag
-                if asig > 0: td["accel_samples"].append(asig)
-                elif asig < 0: td["decel_samples"].append(-asig)
+                if asig > 0:
+                    ab = min(int(asig / _MOTION_ACCEL_BIN), _AN_POS - 1)
+                    td["accel_hist"][ab] += 1
+                elif asig < 0:
+                    db = min(int(-asig / _MOTION_ACCEL_BIN), _AN_POS - 1)
+                    td["decel_hist"][db] += 1
                 mspd = (spd + spd0) / 2.0
                 if mspd >= _MOTION_MIN_SPEED_MS:
                     sb2 = min(int(mspd / _MOTION_SPEED_BIN), _SN - 1)
@@ -1294,13 +1334,14 @@ def extract_full_analysis(log_gz_bytes: bytes, filename: str = "") -> dict:
             _rnext += _riv
         _rprev = frame
 
-        # ポゼッション集計 (5秒ウィンドウ)
+        # ポゼッション集計 (5秒ウィンドウ、サブサンプリング)
+        _poss_fc += 1
         assert _pw_start is not None
         while t >= _pw_start + _PIV:
             _pts.append(round((_pw_start - first_frame_ns) / 1e9, 1))
             _prs.append(round(_pyc / _ptc, 3) if _ptc > 0 else 0.5)
             _pyc = 0; _ptc = 0; _pw_start += _PIV
-        if ball:
+        if ball and _poss_fc % _POSS_SUBSAMPLE == 0:
             bxv = ball.get("x", 0); byv = ball.get("y", 0)
             md2 = float("inf"); cl = None
             for r in yr:
