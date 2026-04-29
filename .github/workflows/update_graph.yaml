@@ -225,12 +225,13 @@ jobs:
             public/analysis-data/
 
       - name: Set up Google Drive cookies
-        if: ${{ secrets.GDRIVE_COOKIES != '' }}
         env:
           GDRIVE_COOKIES: ${{ secrets.GDRIVE_COOKIES }}
         run: |
-          mkdir -p ~/.cache/gdown
-          echo "$GDRIVE_COOKIES" > ~/.cache/gdown/cookies.txt
+          if [ -n "$GDRIVE_COOKIES" ]; then
+            mkdir -p ~/.cache/gdown
+            echo "$GDRIVE_COOKIES" > ~/.cache/gdown/cookies.txt
+          fi
 
       - name: Analyze real game logs
         continue-on-error: true
