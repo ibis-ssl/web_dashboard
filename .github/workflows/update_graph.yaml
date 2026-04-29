@@ -219,6 +219,15 @@ jobs:
           fi
           python -u scripts/reallog_collector.py $INCREMENTAL_FLAG --max-reanalyze 5
 
+      - name: Ensure artifact files exist
+        if: always()
+        run: |
+          mkdir -p public/analysis-data public/analysis-folders
+          if [ ! -f public/analysis-index.json ]; then
+            echo '{"matches":[],"folders":[]}' > public/analysis-index.json
+            echo "WARN: analysis-index.json が無かったので空構造を生成しました"
+          fi
+
       - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v7

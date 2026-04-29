@@ -332,6 +332,18 @@ if args.incremental and OUTPUT_INDEX.exists():
         print(f"既存インデックス読み込み失敗: {e}")
 
 # ---------------------------------------------------------------------------
+# ダウンロード前に index を最低 1 回確定させる (タイムアウト時の artifact 保全)
+# ---------------------------------------------------------------------------
+_seed_meta: list[dict] = []
+if OUTPUT_INDEX.exists():
+    try:
+        with open(OUTPUT_INDEX, "r", encoding="utf-8") as f:
+            _seed_meta = json.load(f).get("matches", [])
+    except Exception:
+        _seed_meta = []
+_write_index_files(_seed_meta)
+
+# ---------------------------------------------------------------------------
 # フォルダをダウンロードしてファイル一覧と file_id マッピングを取得
 # ---------------------------------------------------------------------------
 log_files, gdrive_files = download_folder_and_get_ids(args.folder_id)
