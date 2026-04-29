@@ -231,7 +231,7 @@ jobs:
           if [ "${{ needs.detect-mode.outputs.mode }}" = "incremental" ]; then
             INCREMENTAL_FLAG="--incremental"
           fi
-          python -u scripts/reallog_collector.py $INCREMENTAL_FLAG --max-reanalyze 5
+          python -u scripts/reallog_collector.py $INCREMENTAL_FLAG
 
       - name: Upload final reallog artifact
         if: always()
