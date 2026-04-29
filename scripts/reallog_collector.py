@@ -239,7 +239,7 @@ def download_folder_and_get_ids(folder_id: str) -> tuple[list[pathlib.Path], dic
             id=folder_id,
             output=str(CACHE_DIR),
             quiet=False,
-            use_cookies=False,
+            use_cookies=True,
             skip_download=True,
         )
     except Exception as e:
@@ -263,7 +263,7 @@ def download_folder_and_get_ids(folder_id: str) -> tuple[list[pathlib.Path], dic
             id=folder_id,
             output=str(CACHE_DIR),
             quiet=False,
-            use_cookies=False,
+            use_cookies=True,
         )
     except Exception as e:
         print(f"フォルダダウンロード失敗: {e}")
