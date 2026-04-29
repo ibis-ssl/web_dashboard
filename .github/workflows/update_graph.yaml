@@ -225,7 +225,6 @@ jobs:
             public/analysis-data/
 
       - name: Analyze real game logs
-        timeout-minutes: 7
         continue-on-error: true
         run: |
           INCREMENTAL_FLAG=""
