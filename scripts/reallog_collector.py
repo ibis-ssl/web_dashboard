@@ -233,13 +233,14 @@ def download_folder_and_get_ids(folder_id: str) -> tuple[list[pathlib.Path], dic
 
     print(f"Google Drive フォルダ {folder_id} をダウンロード中...")
 
+    # フォルダ構造取得 (cookies なし — 認証すると一覧が取れなくなる場合がある)
     gdrive_files: dict[str, str] = {}
     try:
         planned_files = gdown.download_folder(
             id=folder_id,
             output=str(CACHE_DIR),
             quiet=False,
-            use_cookies=True,
+            use_cookies=False,
             skip_download=True,
         )
     except Exception as e:
@@ -258,27 +259,29 @@ def download_folder_and_get_ids(folder_id: str) -> tuple[list[pathlib.Path], dic
     else:
         print("  ファイルID取得失敗 (ダウンロードリンクなし)")
 
-    try:
-        downloaded_files = gdown.download_folder(
-            id=folder_id,
-            output=str(CACHE_DIR),
-            quiet=False,
-            use_cookies=True,
-        )
-    except Exception as e:
-        print(f"フォルダダウンロード失敗: {e}")
-        downloaded_files = []
+    # 未キャッシュファイルを個別ダウンロード (cookies あり — レート制限回避)
+    _cookies_file = pathlib.Path.home() / ".cache" / "gdown" / "cookies.txt"
+    _use_cookies = _cookies_file.exists()
+    for rel_path, file_id in gdrive_files.items():
+        dest = CACHE_DIR / rel_path
+        if dest.exists():
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            result = gdown.download(
+                id=file_id,
+                output=str(dest),
+                quiet=False,
+                use_cookies=_use_cookies,
+                fuzzy=True,
+            )
+            if not result:
+                print(f"  DL失敗 (戻り値なし): {rel_path}")
+        except Exception as e:
+            print(f"  DL失敗: {rel_path}: {e}")
 
-    log_files = [
-        pathlib.Path(path)
-        for path in downloaded_files or []
-        if str(path).endswith(".log.gz")
-    ]
-
-    if not log_files:
-        log_files = sorted(CACHE_DIR.rglob("*.log.gz"))
-
-    return sorted(log_files), gdrive_files
+    log_files = sorted(CACHE_DIR.rglob("*.log.gz"))
+    return log_files, gdrive_files
 
 
 def _load_meta_from_json(
