@@ -273,7 +273,6 @@ def download_folder_and_get_ids(folder_id: str) -> tuple[list[pathlib.Path], dic
                 output=str(dest),
                 quiet=False,
                 use_cookies=_use_cookies,
-                fuzzy=True,
             )
             if not result:
                 print(f"  DL失敗 (戻り値なし): {rel_path}")
